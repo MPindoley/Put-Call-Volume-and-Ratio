@@ -1,0 +1,113 @@
+// Options flow analytics — historical storage.
+// The live dashboard runs entirely from the in-memory flow engine; everything
+// here is best-effort persistence for baselines, backtesting and alert audit.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Ticker {
+  symbol    String   @id
+  name      String?
+  sector    String   @default("Unknown")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  snapshots FlowSnapshot[]
+  baselines VolumeBaseline[]
+  alerts    Alert[]
+  overrides TickerOverride?
+}
+
+/// 5-minute flow snapshots, retained ~30 days for backtesting.
+model FlowSnapshot {
+  id           BigInt   @id @default(autoincrement())
+  symbol       String
+  bucketStart  DateTime
+  putVolume    Int
+  callVolume   Int
+  putPremium   Float
+  callPremium  Float
+  putCallRatio Float
+  spikeScore   Int      @default(0)
+  underlying   Float?
+
+  ticker Ticker @relation(fields: [symbol], references: [symbol])
+
+  @@unique([symbol, bucketStart])
+  @@index([bucketStart])
+}
+
+/// 20-day volume baselines per ticker, plus intraday time-of-day profile.
+model VolumeBaseline {
+  id            Int      @id @default(autoincrement())
+  symbol        String
+  avgVolume     Float
+  stdDevVolume  Float
+  /// JSON array of 13 weights, one per 30-min bucket of the trading day.
+  intradayShape Json
+  sampleDays    Int
+  computedAt    DateTime @default(now())
+
+  ticker Ticker @relation(fields: [symbol], references: [symbol])
+
+  @@index([symbol, computedAt])
+}
+
+model Alert {
+  id             String   @id @default(cuid())
+  symbol         String
+  level          String // elevated | significant | extreme
+  message        String
+  volumeMultiple Float
+  premium        Float
+  contracts      Int
+  putCallRatio   Float
+  createdAt      DateTime @default(now())
+  /// Filled in later by the accuracy tracker: underlying % move after 1 day.
+  moveNextDay    Float?
+
+  ticker Ticker @relation(fields: [symbol], references: [symbol])
+
+  @@index([createdAt])
+  @@index([symbol, createdAt])
+}
+
+/// Aggregate S&P 500 put/call ratio history (5-min points).
+model AggregateRatioPoint {
+  id          BigInt   @id @default(autoincrement())
+  bucketStart DateTime @unique
+  ratio       Float
+  putVolume   BigInt
+  callVolume  BigInt
+  spxPrice    Float?
+}
+
+/// Single-row user settings (this is a single-operator trading tool).
+model UserSettings {
+  id                 Int      @id @default(1)
+  sensitivity        Float    @default(1.0)
+  minPremium         Float    @default(500000)
+  minContracts       Int      @default(100)
+  updateFrequencySec Int      @default(30)
+  soundEnabled       Boolean  @default(false)
+  timezone           String   @default("America/New_York")
+  hiddenColumns      String[] @default([])
+  watchlist          String[] @default([])
+  updatedAt          DateTime @updatedAt
+}
+
+model TickerOverride {
+  symbol       String  @id
+  sensitivity  Float?
+  minPremium   Float?
+  minContracts Int?
+  muted        Boolean @default(false)
+
+  ticker Ticker @relation(fields: [symbol], references: [symbol])
+}
