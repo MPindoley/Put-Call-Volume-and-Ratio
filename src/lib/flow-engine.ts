@@ -20,7 +20,8 @@ import type {
   TickerFlow,
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
-import type { OptionsChainAggregate } from './polygon';
+import { apiStats } from './data-source';
+import type { OptionsChainAggregate } from './provider';
 import { aggregateRatio, percentileRank, putCallRatio, sectorRatios } from './ratio-calculator';
 import { SpikeDetector } from './spike-detector';
 import { sectorOf } from './universe';
@@ -71,8 +72,8 @@ export class FlowEngine {
   ingest(agg: OptionsChainAggregate, now = Date.now()): TickerFlow {
     const st = this.tickers.get(agg.symbol) ?? this.initTicker(agg.symbol);
 
-    // Delta vs previous cumulative snapshot. Polygon day volumes are
-    // monotonically increasing intraday; a drop means a new session started.
+    // Delta vs previous cumulative snapshot. Providers report day volumes
+    // that only grow intraday; a drop means a new session started.
     const prev = st.cumulative;
     const newSession = prev !== null && agg.putVolume + agg.callVolume < prev.putVolume + prev.callVolume;
     const base = newSession || prev === null ? null : prev;
@@ -233,13 +234,15 @@ export class FlowEngine {
   }
 
   status(): ConnectionStatus {
+    const api = apiStats();
     return {
       healthy: Date.now() - this.lastPollAt < 120_000,
       mode: this.mode,
+      provider: api.provider,
       lastPollAt: this.lastPollAt,
       tickersTracked: this.tickers.size,
-      apiCallsLastMinute: 0, // filled by the poller, which owns the bucket
-      rateLimitPerMinute: Number(process.env.POLYGON_RPM ?? 5),
+      apiCallsLastMinute: api.callsLastMinute,
+      rateLimitPerMinute: api.perMinute,
       dbConnected: this.dbConnected,
       marketOpen: isMarketHours(),
     };

@@ -5,7 +5,6 @@
 import type { Server as HttpServer } from 'node:http';
 import { Server } from 'socket.io';
 import { getFlowEngine } from './flow-engine';
-import { getPolygonClient } from './polygon';
 import type { ClientToServerEvents, ServerToClientEvents } from '@/types';
 
 export type FlowSocketServer = Server<ClientToServerEvents, ServerToClientEvents>;
@@ -32,10 +31,7 @@ export function createSocketServer(httpServer: HttpServer): FlowSocketServer {
     if (aggregate && lastPoint) {
       socket.emit('ratio-update', aggregate, engine.getSectors(), lastPoint);
     }
-    socket.emit('connection-status', {
-      ...engine.status(),
-      apiCallsLastMinute: getPolygonClient().bucket.callsLastMinute(),
-    });
+    socket.emit('connection-status', engine.status());
 
     socket.on('request-snapshot', () => {
       socket.emit('flow-update', engine.allFlows());

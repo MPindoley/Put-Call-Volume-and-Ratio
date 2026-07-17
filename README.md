@@ -34,27 +34,30 @@ full index).
 
 ```bash
 npm install
-cp .env.example .env.local        # add your POLYGON_API_KEY (or leave blank for demo mode)
+cp .env.example .env.local        # DATA_PROVIDER=cboe works with zero keys/fees
 npm run dev                       # http://localhost:3000
 ```
 
-**No API key?** Leave `POLYGON_API_KEY` empty and the app runs in **simulator
-mode** — synthetic but realistic flow so every feature (table, chart, spikes,
-alerts, sockets) works end to end. The status bar shows "SIMULATED DATA".
+### Data sources (pick one via `DATA_PROVIDER`)
 
-### With live Polygon data
+| Provider | Cost | Latency | Setup |
+|---|---|---|---|
+| `cboe` *(default)* | **Free** | 15-min delayed chains with per-contract volume | None — no key, no account |
+| `massive` | Paid for real-time (free tier = 5 calls/min, end-of-day) | Real-time on options plans | `MASSIVE_API_KEY` |
+| `demo` | Free | Synthetic | None — works offline |
 
-1. Create a key at <https://polygon.io/dashboard/api-keys>.
-2. **Plan matters.** Options chain snapshots require an options-enabled plan:
-   - *Options Starter/Developer/Advanced* — set `POLYGON_RPM` to your plan's
-     comfortable call rate (e.g. `300`). The poller refreshes the whole
-     universe every cycle.
-   - *Free tier (5 calls/min)* — it still works: the poller cycles tickers
-     through a priority queue (watchlist → spiking → stalest first), so each
-     ticker refreshes roughly every `universe / 5` minutes. Trim
-     `MAX_TICKERS` (e.g. `20`) for a tight, fast-refreshing board.
-3. Put the key in `.env.local` as `POLYGON_API_KEY=...`. It is only ever read
-   server-side; nothing key-related is shipped to the browser.
+- **CBOE (free)** pulls full option chains from CBOE's public delayed-quotes
+  CDN. 15-minute delay means spike alerts land ~15 minutes behind the tape —
+  fine for ratio context, session flow and swing entries; not for scalping.
+  `CBOE_RPM=60` refreshes a 250-ticker universe about every 4 minutes, with
+  watchlist/spiking names prioritized.
+- **Massive.com is Polygon.io** — the company renamed in October 2025; same
+  API, keys and pricing (`api.polygon.io` and `api.massive.com` both work).
+  Real-time options snapshots require a paid options plan; set `MASSIVE_RPM`
+  to your plan's rate. `POLYGON_API_KEY`/`POLYGON_RPM` are honored as aliases.
+  Keys are only ever read server-side; nothing key-related reaches the browser.
+- **Simulator** generates realistic synthetic flow so every feature (table,
+  chart, spikes, alerts, sockets) can be exercised end to end, even offline.
 
 ### With a database (optional but recommended)
 
@@ -81,7 +84,7 @@ Without a database everything live still works; you lose stored baselines,
 ## Architecture
 
 ```
-Polygon REST (/v3/snapshot/options, /v2/aggs prev)
+Data provider (CBOE free CDN | Massive/Polygon REST | simulator)
         │  token-bucket rate limiter + priority queue + backoff
         ▼
    Poller (node-cron, 30s) ──▶ FlowEngine (in-memory: rolling 5-min windows,
@@ -134,8 +137,9 @@ prints don't page you.
 
 ## Environment variables
 
-See [`.env.example`](.env.example) — `POLYGON_API_KEY`, `POLYGON_RPM`,
-`DATABASE_URL`, `PORT`, `POLL_INTERVAL_SEC`, `MAX_TICKERS`.
+See [`.env.example`](.env.example) — `DATA_PROVIDER`, `MASSIVE_API_KEY`,
+`MASSIVE_RPM`, `CBOE_RPM`, `DATABASE_URL`, `PORT`, `POLL_INTERVAL_SEC`,
+`MAX_TICKERS` (legacy `POLYGON_*` names still honored).
 
 ## Extending the universe
 
@@ -147,15 +151,16 @@ follows automatically.
 
 1. New Railway project → **Deploy from GitHub repo**.
 2. Add a **PostgreSQL** plugin; Railway injects `DATABASE_URL`.
-3. Service variables: `POLYGON_API_KEY`, `POLYGON_RPM`, `NODE_ENV=production`.
+3. Service variables: `DATA_PROVIDER=cboe` (or `massive` + `MASSIVE_API_KEY`),
+   `NODE_ENV=production`.
 4. Build command `npm run build && npx prisma db push`, start command `npm start`.
 5. Railway assigns `PORT` automatically; the server reads it.
 
 ## Roadmap / not yet implemented
 
-- Polygon WebSocket trade stream (needs Advanced plan) for true tick-level
-  sweep/at-ask detection — the poller architecture accepts it as a second
-  ingest source into `FlowEngine`.
+- Massive/Polygon WebSocket trade stream (needs their Advanced plan) for true
+  tick-level sweep/at-ask detection — the provider architecture accepts it as
+  another ingest source into `FlowEngine`.
 - Discord/Telegram/email notifiers, multiple named watchlists, alert-accuracy
   tracker (schema field `Alert.moveNextDay` is ready), open-interest wall
   detection.

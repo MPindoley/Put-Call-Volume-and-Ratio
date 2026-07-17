@@ -94,6 +94,8 @@ export type DataSourceMode = 'live' | 'simulated';
 export interface ConnectionStatus {
   healthy: boolean;
   mode: DataSourceMode;
+  /** Which data source is feeding the engine: 'massive' | 'cboe' | 'simulator'. */
+  provider: string;
   /** Epoch ms of last completed poll cycle. */
   lastPollAt: number;
   tickersTracked: number;

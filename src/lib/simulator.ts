@@ -1,11 +1,11 @@
 /**
- * Synthetic options-flow generator, used when POLYGON_API_KEY is absent (demo
- * mode). Produces cumulative session volumes with realistic characteristics:
+ * Synthetic options-flow generator, used when DATA_PROVIDER=demo (works
+ * offline). Produces cumulative session volumes with realistic characteristics:
  * per-ticker liquidity tiers, intraday U-shape pacing, drifting put/call skew,
  * and occasional injected volume spikes so the detection pipeline can be
  * exercised end to end.
  */
-import type { OptionsChainAggregate } from './polygon';
+import type { OptionsChainAggregate } from './provider';
 import { DEFAULT_INTRADAY_SHAPE } from './spike-detector';
 import { tradingBucket } from './utils';
 

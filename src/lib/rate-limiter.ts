@@ -1,7 +1,7 @@
 /**
- * Token-bucket rate limiter with a priority queue, sized to the Polygon plan
- * (POLYGON_RPM). Watched/spiking tickers are fetched first; on the free tier
- * the poller simply drains the queue at 5 calls/min and cycles the universe.
+ * Token-bucket rate limiter with a priority queue, sized per data source
+ * (MASSIVE_RPM / CBOE_RPM). Watched/spiking tickers are fetched first; on
+ * tight budgets the poller drains the queue and cycles the universe fairly.
  */
 
 interface QueueItem {

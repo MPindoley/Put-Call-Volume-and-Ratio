@@ -44,12 +44,18 @@ export function StatusBar(): JSX.Element {
       {status && (
         <>
           <span className={cn(status.mode === 'simulated' && 'text-caution')}>
-            {status.mode === 'simulated' ? 'SIMULATED DATA (no API key)' : 'Polygon live'}
+            {status.provider === 'simulator'
+              ? 'SIMULATED DATA'
+              : status.provider === 'cboe'
+                ? 'CBOE free feed (15-min delayed)'
+                : 'Massive live'}
           </span>
           <span>{status.marketOpen ? 'Market open' : 'Market closed'}</span>
-          <span className="tnum">
-            API {status.apiCallsLastMinute}/{status.rateLimitPerMinute} per min
-          </span>
+          {status.rateLimitPerMinute > 0 && (
+            <span className="tnum">
+              API {status.apiCallsLastMinute}/{status.rateLimitPerMinute} per min
+            </span>
+          )}
           <span>{status.tickersTracked} tickers</span>
           <span className={cn(!status.dbConnected && 'text-caution')}>
             {status.dbConnected ? 'DB connected' : 'DB off — live only'}

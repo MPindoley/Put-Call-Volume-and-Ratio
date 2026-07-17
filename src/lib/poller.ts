@@ -1,16 +1,17 @@
 /**
  * Polling service. Every POLL_INTERVAL_SEC it refreshes as many tickers as the
  * rate budget allows, prioritizing (1) watchlist symbols, (2) tickers already
- * spiking, (3) the least-recently-updated of the rest — so on the Polygon free
- * tier (5 calls/min) the universe cycles fairly while hot names stay fresh.
+ * spiking, (3) the least-recently-updated of the rest — so on rate-limited
+ * sources (Massive free tier, polite CBOE pacing) the universe cycles fairly
+ * while hot names stay fresh.
  *
- * In demo mode (no POLYGON_API_KEY) the simulator refreshes every ticker every
- * cycle at zero API cost.
+ * In demo mode (DATA_PROVIDER=demo) the simulator refreshes every ticker
+ * every cycle at zero API cost.
  */
 import cron from 'node-cron';
 import type { Server } from 'socket.io';
+import { getDataProvider } from './data-source';
 import { getFlowEngine, type FlowEngine } from './flow-engine';
-import { getPolygonClient } from './polygon';
 import { FlowSimulator } from './simulator';
 import { TRACKED_UNIVERSE } from './universe';
 import { tryDb, dbAvailable } from './db';
@@ -33,12 +34,12 @@ export class Poller {
 
   start(): void {
     const intervalSec = Math.max(15, Number(process.env.POLL_INTERVAL_SEC ?? 30));
-    const polygon = getPolygonClient();
-    this.engine.mode = polygon.enabled ? 'live' : 'simulated';
+    const provider = getDataProvider();
+    this.engine.mode = provider ? 'live' : 'simulated';
     this.engine.dbConnected = dbAvailable();
     console.log(
-      `[poller] starting: mode=${this.engine.mode}, interval=${intervalSec}s, ` +
-        `universe=${TRACKED_UNIVERSE.length} tickers, rate=${polygon.bucket.perMinute}/min`,
+      `[poller] starting: source=${provider?.name ?? 'simulator'}, interval=${intervalSec}s, ` +
+        `universe=${TRACKED_UNIVERSE.length} tickers, rate=${provider ? `${provider.bucket.perMinute}/min` : 'n/a'}`,
     );
 
     void this.loadStoredState();
@@ -90,10 +91,7 @@ export class Poller {
         this.io.emit('flow-update', updated);
         this.io.emit('ratio-update', aggregate, sectors, point);
       }
-      this.io?.emit('connection-status', {
-        ...this.engine.status(),
-        apiCallsLastMinute: getPolygonClient().bucket.callsLastMinute(),
-      });
+      this.io?.emit('connection-status', this.engine.status());
       await this.persistCycle(point.time * 1000, updated);
     } catch (err) {
       console.error('[poller] cycle failed:', err);
@@ -113,11 +111,12 @@ export class Poller {
   }
 
   private async liveCycle(): Promise<TickerFlow[]> {
-    const polygon = getPolygonClient();
+    const provider = getDataProvider();
+    if (!provider) return [];
     const intervalSec = Math.max(15, Number(process.env.POLL_INTERVAL_SEC ?? 30));
     // Spend at most this cycle's share of the per-minute budget, so the
     // queue never grows unboundedly on constrained plans.
-    const budget = Math.max(1, Math.floor((polygon.bucket.perMinute * intervalSec) / 60));
+    const budget = Math.max(1, Math.floor((provider.bucket.perMinute * intervalSec) / 60));
     const batch = this.pickBatch(budget);
 
     const updated: TickerFlow[] = [];
@@ -127,7 +126,7 @@ export class Poller {
         const item = batch[cursor++];
         if (!item) break;
         try {
-          const agg = await polygon.getOptionsFlowSnapshot(item.symbol, item.priority);
+          const agg = await provider.getOptionsFlowSnapshot(item.symbol, item.priority);
           this.lastFetched.set(item.symbol, Date.now());
           updated.push(this.engine.ingest(agg));
         } catch (err) {

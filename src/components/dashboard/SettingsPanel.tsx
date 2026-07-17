@@ -118,7 +118,7 @@ export function SettingsPanel(): JSX.Element {
                   <option value={300}>5 minutes</option>
                 </select>
                 <span className="mt-0.5 block text-[10px] text-slate-600">
-                  Effective cadence is limited by your Polygon plan; requires restart to change the poll loop.
+                  Effective cadence is limited by your data source&apos;s rate budget; requires restart to change the poll loop.
                 </span>
               </label>
 
