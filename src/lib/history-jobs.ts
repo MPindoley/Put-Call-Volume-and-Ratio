@@ -14,6 +14,9 @@
  *  pruneHistory     — retention: snapshots 35d, ratio points 90d, alerts 120d.
  */
 import type { SpikeAlert } from '@/types';
+import { historicalVol, ivRank } from './chain-analytics';
+import { CboeClient } from './cboe';
+import { getDataProvider } from './data-source';
 import { tryDb } from './db';
 import type { FlowEngine } from './flow-engine';
 import { DEFAULT_INTRADAY_SHAPE } from './spike-detector';
@@ -154,10 +157,112 @@ export async function pruneHistory(): Promise<void> {
   });
 }
 
+/** Upsert today's vol/OI metrics per ticker from live flow state. */
+export async function recordDailyMetrics(engine: FlowEngine): Promise<void> {
+  await tryDb('record daily metrics', async (db) => {
+    const today = new Date(new Date().toISOString().slice(0, 10));
+    for (const flow of engine.allFlows()) {
+      if (flow.lastUpdated === 0) continue;
+      const data = {
+        iv30: flow.iv30,
+        close: flow.underlyingPrice > 0 ? flow.underlyingPrice : null,
+        putOI: flow.analytics ? flow.analytics.putOI : null,
+        callOI: flow.analytics ? flow.analytics.callOI : null,
+        rrSkew: flow.analytics?.rrSkew25 ?? null,
+      };
+      await db.dailyMetric.upsert({
+        where: { symbol_date: { symbol: flow.symbol, date: today } },
+        create: { symbol: flow.symbol, date: today, ...data },
+        update: data,
+      });
+    }
+    await db.dailyMetric.deleteMany({ where: { date: { lt: new Date(Date.now() - 400 * DAY_MS) } } });
+  });
+}
+
+/**
+ * Refresh per-ticker vol context: IV rank from stored IV30 history, HV20 from
+ * CBOE daily closes (fetched for up to `hvBudget` tickers per pass, so the
+ * whole universe backfills within the first day), and yesterday's OI totals.
+ */
+export async function refreshVolContext(engine: FlowEngine, hvBudget = 60): Promise<void> {
+  await tryDb('refresh vol context', async (db) => {
+    const since = new Date(Date.now() - 370 * DAY_MS);
+    const rows = await db.dailyMetric.findMany({
+      where: { date: { gte: since } },
+      orderBy: { date: 'asc' },
+      select: { symbol: true, date: true, iv30: true, hv20: true, putOI: true, callOI: true },
+    });
+    const bySymbol = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const list = bySymbol.get(row.symbol) ?? [];
+      list.push(row);
+      bySymbol.set(row.symbol, list);
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    for (const { symbol } of TRACKED_UNIVERSE) {
+      const history = bySymbol.get(symbol) ?? [];
+      const ivHistory = history.map((h) => h.iv30 ?? 0).filter((v) => v > 0);
+      const currentIv = engine.getFlow(symbol)?.iv30 ?? 0;
+      const prev = [...history].reverse().find((h) => h.date.toISOString().slice(0, 10) !== today);
+      const latestHv = [...history].reverse().find((h) => h.hv20 !== null)?.hv20 ?? null;
+      const existing = engine.volContext.get(symbol);
+      engine.volContext.set(symbol, {
+        ivRank: currentIv > 0 ? ivRank(currentIv, ivHistory) : null,
+        hv20: latestHv ?? existing?.hv20 ?? null,
+        prevTotalOI: prev && prev.putOI !== null && prev.callOI !== null ? prev.putOI + prev.callOI : null,
+      });
+    }
+
+  });
+  await backfillHV(engine, hvBudget);
+}
+
+/**
+ * HV20 backfill from CBOE's free daily-history endpoint. Deliberately NOT
+ * DB-gated: realized vol works day one without a database (results are then
+ * persisted best-effort when one is connected).
+ */
+async function backfillHV(engine: FlowEngine, hvBudget: number): Promise<void> {
+  const provider = getDataProvider();
+  if (!(provider instanceof CboeClient)) return;
+  const missing = TRACKED_UNIVERSE.filter((u) => {
+    const ctx = engine.volContext.get(u.symbol);
+    return !ctx || ctx.hv20 === null;
+  }).slice(0, hvBudget);
+  let filled = 0;
+  for (const { symbol } of missing) {
+    try {
+      const closes = await provider.getDailyCloses(symbol);
+      const hv = historicalVol(closes);
+      if (hv !== null) {
+        const ctx = engine.volContext.get(symbol) ?? { ivRank: null, hv20: null, prevTotalOI: null };
+        ctx.hv20 = hv;
+        engine.volContext.set(symbol, ctx);
+        const day = new Date(new Date().toISOString().slice(0, 10));
+        await tryDb('persist hv', (db) =>
+          db.dailyMetric.upsert({
+            where: { symbol_date: { symbol, date: day } },
+            create: { symbol, date: day, hv20: hv },
+            update: { hv20: hv },
+          }),
+        );
+        filled += 1;
+      }
+    } catch (err) {
+      console.warn(`[maintenance] HV fetch failed for ${symbol}:`, err instanceof Error ? err.message : err);
+    }
+  }
+  if (filled > 0) console.log(`[maintenance] HV20 computed for ${filled} tickers`);
+}
+
 /** One maintenance pass; scheduled every 2h and at startup. */
 export async function runMaintenance(engine: FlowEngine): Promise<void> {
   const baselines = await computeBaselines(engine);
   const scored = await scoreAlerts();
+  await recordDailyMetrics(engine);
+  await refreshVolContext(engine);
   await pruneHistory();
   if (baselines > 0 || scored > 0) {
     console.log(`[maintenance] baselines refreshed for ${baselines} tickers, ${scored} alerts scored`);

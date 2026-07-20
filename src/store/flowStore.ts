@@ -13,6 +13,7 @@ import { persist } from 'zustand/middleware';
 import type {
   AggregateRatio,
   ConnectionStatus,
+  MarketContext,
   RatioPoint,
   SectorRatio,
   SpikeAlert,
@@ -27,6 +28,10 @@ export type SortKey =
   | 'netFlow'
   | 'premium'
   | 'spikeScore'
+  | 'iv30'
+  | 'ivRank'
+  | 'rrSkew'
+  | 'oiPutCall'
   | 'lastUpdated';
 
 export type FlowFilter = 'all' | 'bullish' | 'bearish' | 'unusual';
@@ -34,6 +39,7 @@ export type FlowFilter = 'all' | 'bullish' | 'bearish' | 'unusual';
 interface FlowState {
   rows: Record<string, TickerFlow>;
   aggregate: AggregateRatio | null;
+  market: MarketContext | null;
   sectors: SectorRatio[];
   ratioSeries: RatioPoint[];
   alerts: SpikeAlert[];
@@ -52,7 +58,12 @@ interface FlowState {
   pinned: string[];
 
   applyFlowUpdate: (rows: TickerFlow[]) => void;
-  applyRatioUpdate: (agg: AggregateRatio, sectors: SectorRatio[], point: RatioPoint) => void;
+  applyRatioUpdate: (
+    agg: AggregateRatio,
+    sectors: SectorRatio[],
+    point: RatioPoint,
+    market: MarketContext | null,
+  ) => void;
   applyStatus: (status: ConnectionStatus) => void;
   setSocketConnected: (connected: boolean) => void;
   pushAlert: (alert: SpikeAlert) => void;
@@ -61,6 +72,7 @@ interface FlowState {
   hydrate: (data: {
     rows: TickerFlow[];
     aggregate: AggregateRatio | null;
+    market: MarketContext | null;
     sectors: SectorRatio[];
     ratioSeries: RatioPoint[];
     status: ConnectionStatus;
@@ -80,6 +92,7 @@ export const useFlowStore = create<FlowState>()(
     (set, get) => ({
       rows: {},
       aggregate: null,
+      market: null,
       sectors: [],
       ratioSeries: [],
       alerts: [],
@@ -113,13 +126,13 @@ export const useFlowStore = create<FlowState>()(
         set({ rows: nextRows, flashes: nextFlashes });
       },
 
-      applyRatioUpdate: (aggregate, sectors, point) =>
+      applyRatioUpdate: (aggregate, sectors, point, market) =>
         set((state) => {
           const series = [...state.ratioSeries];
           const last = series[series.length - 1];
           if (!last || point.time > last.time) series.push(point);
           else series[series.length - 1] = point;
-          return { aggregate, sectors, ratioSeries: series.slice(-500) };
+          return { aggregate, sectors, market, ratioSeries: series.slice(-500) };
         }),
 
       applyStatus: (status) => set({ status }),
@@ -137,6 +150,7 @@ export const useFlowStore = create<FlowState>()(
         set({
           rows: Object.fromEntries(data.rows.map((r) => [r.symbol, r])),
           aggregate: data.aggregate,
+          market: data.market,
           sectors: data.sectors,
           ratioSeries: data.ratioSeries,
           status: data.status,
@@ -195,6 +209,10 @@ export function selectVisibleRows(state: FlowState): TickerFlow[] {
       case 'netFlow': return r.netFlow;
       case 'premium': return r.putPremium + r.callPremium;
       case 'spikeScore': return r.spikeScore;
+      case 'iv30': return r.iv30 ?? -1;
+      case 'ivRank': return r.ivRank ?? -1;
+      case 'rrSkew': return r.analytics?.rrSkew25 ?? -999;
+      case 'oiPutCall': return r.analytics?.oiPutCall ?? -1;
       case 'lastUpdated': return r.lastUpdated;
     }
   };

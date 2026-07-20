@@ -9,6 +9,7 @@ export function GET(): NextResponse {
   return NextResponse.json({
     rows: engine.allFlows(),
     aggregate: engine.getAggregate(),
+    market: engine.marketContext,
     sectors: engine.getSectors(),
     ratioSeries: engine.getRatioSeries(),
     status: engine.status(),

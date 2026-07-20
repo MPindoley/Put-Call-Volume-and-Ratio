@@ -10,6 +10,7 @@
  */
 import cron from 'node-cron';
 import type { Server } from 'socket.io';
+import { CboeClient } from './cboe';
 import { getDataProvider } from './data-source';
 import { getFlowEngine, type FlowEngine } from './flow-engine';
 import { persistAlert, runMaintenance, seedTickers } from './history-jobs';
@@ -112,10 +113,11 @@ export class Poller {
       const updated =
         this.engine.mode === 'simulated' ? this.simulateCycle() : await this.liveCycle();
 
+      await this.refreshMarketContext();
       const { aggregate, sectors, point } = this.engine.finalizeCycle();
       if (this.io && updated.length > 0) {
         this.io.emit('flow-update', updated);
-        this.io.emit('ratio-update', aggregate, sectors, point);
+        this.io.emit('ratio-update', aggregate, sectors, point, this.engine.marketContext);
       }
       this.io?.emit('connection-status', this.engine.status());
       await this.persistCycle(point.time * 1000, updated);
@@ -125,6 +127,37 @@ export class Poller {
       this.running = false;
       const elapsed = Date.now() - startedAt;
       if (elapsed > 5_000) console.log(`[poller] cycle took ${elapsed}ms`);
+    }
+  }
+
+  /** VIX / VIX3M term structure: free from the CBOE index-quote endpoint. */
+  private async refreshMarketContext(): Promise<void> {
+    const now = Date.now();
+    if (this.engine.marketContext && now - this.engine.marketContext.updatedAt < 120_000) return;
+    if (this.engine.mode === 'simulated') {
+      const vix = 14 + Math.random() * 8;
+      const vix3m = vix + 1 + Math.random() * 2;
+      this.engine.marketContext = {
+        vix: Number(vix.toFixed(2)),
+        vix3m: Number(vix3m.toFixed(2)),
+        vixSpread: Number((vix3m - vix).toFixed(2)),
+        updatedAt: now,
+      };
+      return;
+    }
+    const provider = getDataProvider();
+    if (!provider || !(provider instanceof CboeClient)) return;
+    const [vix, vix3m] = await Promise.all([
+      provider.getIndexQuote('_VIX'),
+      provider.getIndexQuote('_VIX3M'),
+    ]);
+    if (vix !== null || vix3m !== null) {
+      this.engine.marketContext = {
+        vix,
+        vix3m,
+        vixSpread: vix !== null && vix3m !== null ? Number((vix3m - vix).toFixed(2)) : null,
+        updatedAt: now,
+      };
     }
   }
 

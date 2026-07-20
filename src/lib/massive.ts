@@ -20,6 +20,9 @@ interface MassiveOptionContract {
   day?: { volume?: number; vwap?: number; close?: number };
   last_quote?: { midpoint?: number };
   underlying_asset?: { price?: number };
+  implied_volatility?: number;
+  open_interest?: number;
+  greeks?: { delta?: number; gamma?: number };
 }
 
 interface MassiveSnapshotResponse {
@@ -81,6 +84,9 @@ export class MassiveClient implements OptionsDataProvider {
       priceChangePct: 0,
       contractsSeen: 0,
       largestContractVolume: 0,
+      iv30: null,
+      iv30Change: null,
+      contracts: [],
     };
 
     let path: string | null = `/v3/snapshot/options/${encodeURIComponent(symbol)}?limit=250`;
@@ -88,21 +94,41 @@ export class MassiveClient implements OptionsDataProvider {
       const data: MassiveSnapshotResponse = await this.get<MassiveSnapshotResponse>(path, priority);
       for (const contract of data.results ?? []) {
         const volume = contract.day?.volume ?? 0;
-        if (volume <= 0) continue;
         const price = contract.day?.vwap ?? contract.day?.close ?? contract.last_quote?.midpoint ?? 0;
-        const premium = price * volume * 100;
         const type = contract.details?.contract_type;
-        if (type === 'put') {
-          agg.putVolume += volume;
-          agg.putPremium += premium;
-        } else if (type === 'call') {
-          agg.callVolume += volume;
-          agg.callPremium += premium;
+        if (volume > 0) {
+          const premium = price * volume * 100;
+          if (type === 'put') {
+            agg.putVolume += volume;
+            agg.putPremium += premium;
+          } else if (type === 'call') {
+            agg.callVolume += volume;
+            agg.callPremium += premium;
+          }
+          agg.contractsSeen += 1;
+          agg.largestContractVolume = Math.max(agg.largestContractVolume, volume);
         }
-        agg.contractsSeen += 1;
-        agg.largestContractVolume = Math.max(agg.largestContractVolume, volume);
         const px = contract.underlying_asset?.price;
         if (px && px > 0) agg.underlyingPrice = px;
+
+        const strike = contract.details?.strike_price ?? 0;
+        const expiration = contract.details?.expiration_date
+          ? Date.parse(`${contract.details.expiration_date}T00:00:00Z`)
+          : NaN;
+        const oi = contract.open_interest ?? 0;
+        if ((type === 'call' || type === 'put') && strike > 0 && Number.isFinite(expiration) && (oi > 0 || volume > 0)) {
+          agg.contracts?.push({
+            type,
+            strike,
+            expiration,
+            iv: contract.implied_volatility ?? 0,
+            delta: contract.greeks?.delta ?? 0,
+            gamma: contract.greeks?.gamma ?? 0,
+            openInterest: oi,
+            volume,
+            mid: price,
+          });
+        }
       }
       path = data.next_url ? data.next_url.replace(BASE, '') : null;
     }

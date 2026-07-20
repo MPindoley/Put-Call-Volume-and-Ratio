@@ -16,16 +16,20 @@ import { selectVisibleRows, useFlowStore, type FlowFilter, type SortKey } from '
 import type { TickerFlow } from '@/types';
 import { Sparkline } from './Sparkline';
 
-const COLUMNS: { key: SortKey | null; label: string; className: string }[] = [
+const COLUMNS: { key: SortKey | null; label: string; className: string; title?: string }[] = [
   { key: 'symbol', label: 'Ticker', className: 'w-24' },
-  { key: 'putCallRatio', label: 'P/C', className: 'w-16 text-right' },
-  { key: 'putVolume', label: 'Puts 5m', className: 'w-20 text-right' },
-  { key: 'callVolume', label: 'Calls 5m', className: 'w-20 text-right' },
-  { key: 'netFlow', label: 'Net Flow', className: 'w-20 text-right' },
-  { key: 'premium', label: 'Premium 5m', className: 'w-24 text-right' },
+  { key: 'putCallRatio', label: 'P/C', className: 'w-14 text-right' },
+  { key: 'putVolume', label: 'Puts 5m', className: 'w-16 text-right' },
+  { key: 'callVolume', label: 'Calls 5m', className: 'w-16 text-right' },
+  { key: 'netFlow', label: 'Net Flow', className: 'w-16 text-right' },
+  { key: 'premium', label: 'Prem 5m', className: 'w-20 text-right' },
+  { key: 'iv30', label: 'IV30', className: 'w-16 text-right', title: '30-day implied volatility (with day change)' },
+  { key: 'ivRank', label: 'IVR', className: 'w-11 text-right', title: 'IV rank: percentile of IV30 vs stored history' },
+  { key: 'rrSkew', label: 'Skew', className: 'w-14 text-right', title: '25Δ risk reversal (call IV − put IV, vol pts). Negative = normal put skew; positive = calls bid over puts' },
+  { key: 'oiPutCall', label: 'OI P/C', className: 'w-14 text-right', title: 'Open-interest put/call ratio (positioning, not volume)' },
   { key: 'spikeScore', label: 'Unusual', className: 'w-28' },
   { key: null, label: 'P/C 30m', className: 'w-28' },
-  { key: 'lastUpdated', label: 'Updated', className: 'w-20 text-right' },
+  { key: 'lastUpdated', label: 'Updated', className: 'w-16 text-right' },
 ];
 
 const ROW_HEIGHT = 40;
@@ -54,17 +58,42 @@ function Row({ row, pinned, flash }: { row: TickerFlow; pinned: boolean; flash: 
           {row.symbol}
         </a>
       </div>
-      <span className={cn('w-16 text-right tnum font-semibold', row.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
+      <span className={cn('w-14 text-right tnum font-semibold', row.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
         {formatRatio(row.putCallRatio)}
       </span>
-      <span className="w-20 text-right tnum text-slate-300">{formatCompact(row.putVolume)}</span>
-      <span className="w-20 text-right tnum text-slate-300">{formatCompact(row.callVolume)}</span>
-      <span className={cn('w-20 text-right tnum', row.netFlow > 0 ? 'text-bullish' : row.netFlow < 0 ? 'text-bearish' : 'text-slate-500')}>
+      <span className="w-16 text-right tnum text-slate-300">{formatCompact(row.putVolume)}</span>
+      <span className="w-16 text-right tnum text-slate-300">{formatCompact(row.callVolume)}</span>
+      <span className={cn('w-16 text-right tnum', row.netFlow > 0 ? 'text-bullish' : row.netFlow < 0 ? 'text-bearish' : 'text-slate-500')}>
         {row.netFlow > 0 ? '+' : ''}
         {formatCompact(row.netFlow)}
       </span>
-      <span className="w-24 text-right tnum text-slate-300" title={`Calls ${formatPremium(row.callPremium)} · Puts ${formatPremium(row.putPremium)}`}>
+      <span className="w-20 text-right tnum text-slate-300" title={`Calls ${formatPremium(row.callPremium)} · Puts ${formatPremium(row.putPremium)}`}>
         {formatPremium(row.callPremium + row.putPremium)}
+      </span>
+      <span
+        className="w-16 text-right tnum text-slate-300"
+        title={row.iv30Change !== null ? `IV30 day change ${row.iv30Change >= 0 ? '+' : ''}${row.iv30Change.toFixed(1)}` : undefined}
+      >
+        {row.iv30 !== null ? row.iv30.toFixed(1) : '—'}
+        {row.iv30Change !== null && row.iv30Change !== 0 && (
+          <span className={row.iv30Change > 0 ? 'text-bearish' : 'text-bullish'}>{row.iv30Change > 0 ? '↑' : '↓'}</span>
+        )}
+      </span>
+      <span className={cn('w-11 text-right tnum', (row.ivRank ?? 0) >= 75 ? 'text-caution' : 'text-slate-400')}>
+        {row.ivRank !== null ? row.ivRank : '—'}
+      </span>
+      <span
+        className={cn(
+          'w-14 text-right tnum',
+          row.analytics?.rrSkew25 == null ? 'text-slate-600' : row.analytics.rrSkew25 > 0 ? 'text-bullish' : row.analytics.rrSkew25 < -4 ? 'text-bearish' : 'text-slate-400',
+        )}
+      >
+        {row.analytics?.rrSkew25 != null
+          ? `${row.analytics.rrSkew25 > 0 ? '+' : ''}${row.analytics.rrSkew25.toFixed(1)}`
+          : '—'}
+      </span>
+      <span className={cn('w-14 text-right tnum', (row.analytics?.oiPutCall ?? 1) > 1 ? 'text-bearish' : 'text-bullish')}>
+        {row.analytics?.oiPutCall != null ? row.analytics.oiPutCall.toFixed(2) : '—'}
       </span>
       <span className="flex w-28 items-center gap-1.5">
         <SpikeBadge level={row.spikeLevel} />
@@ -75,7 +104,7 @@ function Row({ row, pinned, flash }: { row: TickerFlow; pinned: boolean; flash: 
       <span className="w-28">
         <Sparkline points={row.ratioSparkline} />
       </span>
-      <span className="w-20 text-right tnum text-slate-500">
+      <span className="w-16 text-right tnum text-slate-500">
         {row.lastUpdated > 0 ? formatTime(row.lastUpdated) : '—'}
       </span>
     </div>
@@ -157,23 +186,25 @@ export function FlowTable({ isLoading }: { isLoading: boolean }): JSX.Element {
         <span className="ml-auto text-[11px] text-slate-500 tnum">{rows.length} tickers</span>
       </div>
 
-      {/* Header */}
-      <div className="flex items-center gap-2 border-b border-surface-border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-        {COLUMNS.map((col) => (
-          <button
-            key={col.label}
-            disabled={col.key === null}
-            onClick={() => col.key && setSort(col.key)}
-            className={cn('text-left', col.className, col.key && 'hover:text-slate-300')}
-          >
-            {col.label}
-            {col.key === sortKey && <span className="ml-0.5">{sortDir === 'asc' ? '↑' : '↓'}</span>}
-          </button>
-        ))}
-      </div>
+      {/* Header + body share one horizontal scroll context */}
+      <div className="min-h-0 flex-1 overflow-x-auto">
+        <div className="flex min-w-[1180px] items-center gap-2 border-b border-surface-border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+          {COLUMNS.map((col) => (
+            <button
+              key={col.label}
+              disabled={col.key === null}
+              onClick={() => col.key && setSort(col.key)}
+              title={col.title}
+              className={cn('text-left', col.className, col.key && 'hover:text-slate-300')}
+            >
+              {col.label}
+              {col.key === sortKey && <span className="ml-0.5">{sortDir === 'asc' ? '↑' : '↓'}</span>}
+            </button>
+          ))}
+        </div>
 
-      {/* Virtualized body */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
+        {/* Virtualized body */}
+        <div ref={scrollRef} className="h-[calc(100%-29px)] min-w-[1180px] overflow-y-auto">
         {isLoading && rows.length === 0 ? (
           <div className="space-y-1 p-3">
             {Array.from({ length: 12 }, (_, i) => (
@@ -204,6 +235,7 @@ export function FlowTable({ isLoading }: { isLoading: boolean }): JSX.Element {
             })}
           </div>
         )}
+        </div>
       </div>
     </div>
   );

@@ -18,21 +18,35 @@ export function putCallRatio(putVolume: number, callVolume: number): number {
 }
 
 export function aggregateRatio(
-  rows: Iterable<Pick<TickerFlow, 'sessionPutVolume' | 'sessionCallVolume'>>,
+  rows: Iterable<Pick<TickerFlow, 'sessionPutVolume' | 'sessionCallVolume' | 'sector'>>,
   previousRatio: number | null,
   history: { mean: number | null; percentile: number | null },
 ): AggregateRatio {
   let putVolume = 0;
   let callVolume = 0;
+  let equityPut = 0;
+  let equityCall = 0;
+  let etfPut = 0;
+  let etfCall = 0;
   for (const row of rows) {
     putVolume += row.sessionPutVolume;
     callVolume += row.sessionCallVolume;
+    if (row.sector === 'ETF') {
+      etfPut += row.sessionPutVolume;
+      etfCall += row.sessionCallVolume;
+    } else {
+      equityPut += row.sessionPutVolume;
+      equityCall += row.sessionCallVolume;
+    }
   }
   const ratio = putCallRatio(putVolume, callVolume);
   return {
     ratio,
     putVolume,
     callVolume,
+    // Equity-only P/C reads retail sentiment; ETF/index P/C reads hedging.
+    equityRatio: equityCall > 0 ? putCallRatio(equityPut, equityCall) : null,
+    etfRatio: etfCall > 0 ? putCallRatio(etfPut, etfCall) : null,
     trend: previousRatio === null ? 0 : ratio - previousRatio,
     percentile: history.percentile,
     vs20DayAvg: history.mean !== null && history.mean > 0 ? ratio / history.mean - 1 : null,

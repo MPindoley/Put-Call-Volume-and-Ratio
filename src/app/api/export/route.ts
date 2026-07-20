@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 export function GET(): Response {
   const rows = getFlowEngine().allFlows();
   const header =
-    'symbol,sector,put_call_ratio,put_volume_5m,call_volume_5m,net_flow,session_put_volume,session_call_volume,put_premium,call_premium,spike_level,spike_score,volume_vs_expected,underlying_price,last_updated';
+    'symbol,sector,put_call_ratio,put_volume_5m,call_volume_5m,net_flow,session_put_volume,session_call_volume,put_premium,call_premium,spike_level,spike_score,volume_vs_expected,iv30,iv_rank,hv20,rr_skew_25d,oi_put_call,oi_change_pct,implied_move_pct,max_pain,underlying_price,last_updated';
   const lines = rows.map((r) =>
     [
       r.symbol,
@@ -22,6 +22,14 @@ export function GET(): Response {
       r.spikeLevel,
       r.spikeScore,
       r.volumeVsExpected.toFixed(2),
+      r.iv30 ?? '',
+      r.ivRank ?? '',
+      r.hv20 ?? '',
+      r.analytics?.rrSkew25 ?? '',
+      r.analytics?.oiPutCall ?? '',
+      r.oiChangePct ?? '',
+      r.analytics?.impliedMovePct ?? '',
+      r.analytics?.maxPain ?? '',
       r.underlyingPrice.toFixed(2),
       new Date(r.lastUpdated).toISOString(),
     ].join(','),

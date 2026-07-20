@@ -24,6 +24,7 @@ export function RatioPanel(): JSX.Element {
   const aggregate = useFlowStore((s) => s.aggregate);
   const sectors = useFlowStore((s) => s.sectors);
   const rows = useFlowStore((s) => s.rows);
+  const market = useFlowStore((s) => s.market);
 
   const heatmap = useMemo(
     () =>
@@ -80,6 +81,46 @@ export function RatioPanel(): JSX.Element {
                 ` · ${aggregate.vs20DayAvg >= 0 ? '+' : ''}${(aggregate.vs20DayAvg * 100).toFixed(0)}% vs 20-day avg`}
               {aggregate.percentile !== null && ` · ${aggregate.percentile}th percentile`}
             </p>
+
+            {/* Equity vs ETF split + VIX term structure */}
+            <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]">
+              {aggregate.equityRatio !== null && (
+                <span
+                  className="rounded border border-surface-border px-1.5 py-0.5 text-slate-300"
+                  title="Single-name stocks only — the cleaner retail sentiment read"
+                >
+                  Equity-only{' '}
+                  <span className={cn('tnum font-semibold', aggregate.equityRatio > 1 ? 'text-bearish' : 'text-bullish')}>
+                    {formatRatio(aggregate.equityRatio)}
+                  </span>
+                </span>
+              )}
+              {aggregate.etfRatio !== null && (
+                <span
+                  className="rounded border border-surface-border px-1.5 py-0.5 text-slate-300"
+                  title="ETF/index options — dominated by institutional hedging; reads differently"
+                >
+                  ETF/Index{' '}
+                  <span className={cn('tnum font-semibold', aggregate.etfRatio > 1 ? 'text-bearish' : 'text-bullish')}>
+                    {formatRatio(aggregate.etfRatio)}
+                  </span>
+                </span>
+              )}
+              {market?.vix != null && (
+                <span
+                  className="rounded border border-surface-border px-1.5 py-0.5 text-slate-300"
+                  title={`VIX ${market.vix}${market.vix3m != null ? ` vs VIX3M ${market.vix3m}` : ''} — backwardation (VIX above VIX3M) signals acute stress; contango signals calm`}
+                >
+                  VIX <span className="tnum font-semibold">{market.vix.toFixed(1)}</span>
+                  {market.vixSpread != null && (
+                    <span className={cn('ml-1 font-semibold', market.vixSpread < 0 ? 'text-bearish' : 'text-bullish')}>
+                      {market.vixSpread < 0 ? 'BACKWARDATION' : 'contango'} {market.vixSpread >= 0 ? '+' : ''}
+                      {market.vixSpread.toFixed(1)}
+                    </span>
+                  )}
+                </span>
+              )}
+            </div>
 
             {/* Sector ratios */}
             <div className="mt-3 flex flex-wrap gap-1.5">

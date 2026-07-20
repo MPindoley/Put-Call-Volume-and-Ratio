@@ -22,6 +22,26 @@ model Ticker {
   baselines VolumeBaseline[]
   alerts    Alert[]
   overrides TickerOverride?
+  dailyMetrics DailyMetric[]
+}
+
+/// One row per ticker per trading day: the vol/OI history behind IV rank,
+/// IV-vs-HV and day-over-day OI change. Matures toward a 52-week window.
+model DailyMetric {
+  id      BigInt   @id @default(autoincrement())
+  symbol  String
+  date    DateTime
+  iv30    Float?
+  hv20    Float?
+  close   Float?
+  putOI   Float?
+  callOI  Float?
+  rrSkew  Float?
+
+  ticker Ticker @relation(fields: [symbol], references: [symbol])
+
+  @@unique([symbol, date])
+  @@index([symbol, date])
 }
 
 /// 5-minute flow snapshots, retained ~30 days for backtesting.

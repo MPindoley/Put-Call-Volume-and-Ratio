@@ -17,6 +17,61 @@ export type Sector =
   | 'ETF'
   | 'Unknown';
 
+/** One raw option contract, normalized across providers. */
+export interface RawContract {
+  type: 'call' | 'put';
+  strike: number;
+  /** Expiration as epoch ms (UTC midnight). */
+  expiration: number;
+  /** Implied volatility as a decimal (0.25 = 25%). */
+  iv: number;
+  delta: number;
+  gamma: number;
+  openInterest: number;
+  volume: number;
+  /** Mid price (bid/ask midpoint, falling back to last trade). */
+  mid: number;
+}
+
+/** Derived per-chain analytics: skew, term structure, OI, dealer gamma. */
+export interface ChainAnalytics {
+  /** 25-delta risk reversal in vol points: IV(25Δ call) − IV(25Δ put). Negative = normal put skew. */
+  rrSkew25: number | null;
+  /** ATM IV (vol points) at the ~30-day and ~90-day expirations. */
+  atmIvNear: number | null;
+  atmIvFar: number | null;
+  /** far − near; negative = backwardation (near-term fear/event). */
+  termSlope: number | null;
+  backwardated: boolean;
+  /** Expiration date (ISO) with an IV bulge vs neighbors — likely catalyst date. */
+  eventExpiry: string | null;
+  /** ATM straddle of the nearest expiry as % of spot. */
+  impliedMovePct: number | null;
+  putOI: number;
+  callOI: number;
+  /** put OI / call OI (positioning, slower than volume P/C). */
+  oiPutCall: number | null;
+  /** Strike minimizing option-holder payout at the nearest monthly expiry. */
+  maxPain: number | null;
+  topStrikes: { strike: number; putOI: number; callOI: number }[];
+  /** Naive dealer gamma exposure: $ notional per 1% underlying move (calls +, puts −). */
+  gexPer1Pct: number | null;
+  /** ATM IV of the longest-dated (LEAP) expiry, vol points. */
+  leapIv: number | null;
+  /** Simulator-only prefills; live values come from stored history. */
+  ivRank?: number | null;
+  hv20?: number | null;
+}
+
+/** Market-wide volatility context shown in the ratio panel. */
+export interface MarketContext {
+  vix: number | null;
+  vix3m: number | null;
+  /** vix3m − vix; negative = backwardation (stress). */
+  vixSpread: number | null;
+  updatedAt: number;
+}
+
 /** One row of the live flow table. Everything the client renders per ticker. */
 export interface TickerFlow {
   symbol: string;
@@ -44,6 +99,16 @@ export interface TickerFlow {
   ratioSparkline: number[];
   underlyingPrice: number;
   priceChangePct: number;
+  /** 30-day implied volatility (vol points, e.g. 27.1) and day change. */
+  iv30: number | null;
+  iv30Change: number | null;
+  /** Percentile of current IV30 within stored history (matures toward 52wk). */
+  ivRank: number | null;
+  /** 20-day realized volatility of the underlying (vol points). */
+  hv20: number | null;
+  /** Day-over-day change in total open interest, %. */
+  oiChangePct: number | null;
+  analytics: ChainAnalytics | null;
   /** Epoch ms of last successful data refresh for this ticker. */
   lastUpdated: number;
   /** Direction of the most recent net-flow delta, used for row flashing. */
@@ -66,6 +131,10 @@ export interface AggregateRatio {
   ratio: number;
   putVolume: number;
   callVolume: number;
+  /** Single-name-only P/C (retail sentiment gauge, per GICS sectors). */
+  equityRatio: number | null;
+  /** ETF/index-only P/C (dominated by institutional hedging). */
+  etfRatio: number | null;
   /** Signed change vs ~15 minutes ago (positive = ratio rising = bearish drift). */
   trend: number;
   /** Ratio vs 20-day mean, as percentile 0–100 when history exists. */
@@ -143,7 +212,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
 export interface ServerToClientEvents {
   'flow-update': (rows: TickerFlow[]) => void;
   'spike-alert': (alert: SpikeAlert) => void;
-  'ratio-update': (agg: AggregateRatio, sectors: SectorRatio[], point: RatioPoint) => void;
+  'ratio-update': (
+    agg: AggregateRatio,
+    sectors: SectorRatio[],
+    point: RatioPoint,
+    market: MarketContext | null,
+  ) => void;
   'connection-status': (status: ConnectionStatus) => void;
 }
 

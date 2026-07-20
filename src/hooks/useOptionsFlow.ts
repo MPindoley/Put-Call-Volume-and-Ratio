@@ -11,6 +11,7 @@ import { useFlowStore } from '@/store/flowStore';
 import type {
   AggregateRatio,
   ConnectionStatus,
+  MarketContext,
   RatioPoint,
   SectorRatio,
   TickerFlow,
@@ -19,6 +20,7 @@ import type {
 interface FlowResponse {
   rows: TickerFlow[];
   aggregate: AggregateRatio | null;
+  market: MarketContext | null;
   sectors: SectorRatio[];
   ratioSeries: RatioPoint[];
   status: ConnectionStatus;

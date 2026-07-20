@@ -71,6 +71,92 @@ function Stat({ label, value, className }: { label: string; value: string; class
   );
 }
 
+/** Vol surface + positioning: IV context, skew, term structure, OI, GEX. */
+function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
+  const a = flow.analytics;
+  if (!a && flow.iv30 === null) return null;
+  const ivHvSpread = flow.iv30 !== null && flow.hv20 !== null ? flow.iv30 - flow.hv20 : null;
+  const maxOI = a ? Math.max(1, ...a.topStrikes.map((s) => s.putOI + s.callOI)) : 1;
+
+  return (
+    <Card>
+      <CardHeader title="Volatility & Positioning" />
+      <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
+        <Stat label="IV30" value={flow.iv30 !== null ? `${flow.iv30.toFixed(1)}` : '—'} />
+        <Stat
+          label="IV rank"
+          value={flow.ivRank !== null ? `${flow.ivRank}` : '—'}
+          className={(flow.ivRank ?? 0) >= 75 ? 'text-caution' : undefined}
+        />
+        <Stat label="HV20 (realized)" value={flow.hv20 !== null ? `${flow.hv20.toFixed(1)}` : '—'} />
+        <Stat
+          label="IV − HV spread"
+          value={ivHvSpread !== null ? `${ivHvSpread >= 0 ? '+' : ''}${ivHvSpread.toFixed(1)}` : '—'}
+          className={ivHvSpread !== null && ivHvSpread > 10 ? 'text-caution' : undefined}
+        />
+        {a && (
+          <>
+            <Stat
+              label="25Δ risk reversal"
+              value={a.rrSkew25 !== null ? `${a.rrSkew25 >= 0 ? '+' : ''}${a.rrSkew25.toFixed(1)}` : '—'}
+              className={a.rrSkew25 !== null ? (a.rrSkew25 > 0 ? 'text-bullish' : a.rrSkew25 < -4 ? 'text-bearish' : undefined) : undefined}
+            />
+            <Stat
+              label="Term structure"
+              value={
+                a.termSlope !== null
+                  ? `${a.backwardated ? 'BACKWARDATED' : 'contango'} ${a.termSlope >= 0 ? '+' : ''}${a.termSlope.toFixed(1)}`
+                  : '—'
+              }
+              className={a.backwardated ? 'text-bearish' : undefined}
+            />
+            <Stat label="Implied move (nearest exp)" value={a.impliedMovePct !== null ? `±${a.impliedMovePct.toFixed(1)}%` : '—'} />
+            <Stat label="Likely catalyst expiry" value={a.eventExpiry ?? 'none detected'} />
+            <Stat
+              label="OI put/call"
+              value={a.oiPutCall !== null ? a.oiPutCall.toFixed(2) : '—'}
+              className={(a.oiPutCall ?? 1) > 1 ? 'text-bearish' : 'text-bullish'}
+            />
+            <Stat
+              label="OI change (day)"
+              value={flow.oiChangePct !== null ? `${flow.oiChangePct >= 0 ? '+' : ''}${flow.oiChangePct.toFixed(1)}%` : '—'}
+            />
+            <Stat label="Max pain (near exp)" value={a.maxPain !== null ? `$${a.maxPain}` : '—'} />
+            <Stat
+              label="Dealer gamma (est)"
+              value={a.gexPer1Pct !== null ? `${a.gexPer1Pct >= 0 ? '+' : ''}${formatCompact(a.gexPer1Pct)}/1%` : '—'}
+              className={a.gexPer1Pct !== null ? (a.gexPer1Pct >= 0 ? 'text-bullish' : 'text-bearish') : undefined}
+            />
+            <Stat label="LEAP IV (long-dated)" value={a.leapIv !== null ? a.leapIv.toFixed(1) : '—'} />
+          </>
+        )}
+      </div>
+
+      {a && a.topStrikes.length > 0 && (
+        <div className="border-t border-surface-border px-4 py-3">
+          <p className="mb-2 text-[10px] uppercase tracking-wider text-slate-500">
+            Open-interest walls (top strikes — magnets/battlegrounds near expiry)
+          </p>
+          <div className="space-y-1">
+            {a.topStrikes.map((s) => (
+              <div key={s.strike} className="flex items-center gap-2 text-[11px]">
+                <span className="w-16 text-right tnum text-slate-300">${s.strike}</span>
+                <div className="flex h-3 flex-1 gap-0.5 overflow-hidden rounded-sm">
+                  <div className="bg-bullish/70" style={{ width: `${(s.callOI / maxOI) * 100}%` }} title={`${formatCompact(s.callOI)} call OI`} />
+                  <div className="bg-bearish/70" style={{ width: `${(s.putOI / maxOI) * 100}%` }} title={`${formatCompact(s.putOI)} put OI`} />
+                </div>
+                <span className="w-24 text-right tnum text-[10px] text-slate-500">
+                  {formatCompact(s.callOI)}C / {formatCompact(s.putOI)}P
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
   const { flow, history } = data;
   return (
@@ -105,6 +191,8 @@ function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
           <Sparkline points={flow.ratioSparkline} />
         </div>
       </Card>
+
+      <VolatilityCard flow={flow} />
 
       <Card>
         <CardHeader title="Stored 5-min history (30 days)" />

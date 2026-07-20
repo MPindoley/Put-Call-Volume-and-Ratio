@@ -11,6 +11,7 @@
  * else cboe (free real data out of the box). DATA_PROVIDER=demo forces the
  * simulator.
  */
+import type { ChainAnalytics, RawContract } from '@/types';
 import type { TokenBucket } from './rate-limiter';
 
 export interface OptionsChainAggregate {
@@ -25,6 +26,13 @@ export interface OptionsChainAggregate {
   contractsSeen: number;
   /** Largest single-contract day volume seen — proxy for block activity. */
   largestContractVolume: number;
+  /** 30-day IV (vol points) and day change, when the provider reports it. */
+  iv30: number | null;
+  iv30Change: number | null;
+  /** Full normalized chain for analytics (omitted by the simulator). */
+  contracts?: RawContract[];
+  /** Pre-computed analytics (simulator only; live providers pass contracts). */
+  analytics?: ChainAnalytics;
 }
 
 export interface OptionsDataProvider {

@@ -29,7 +29,7 @@ export function createSocketServer(httpServer: HttpServer): FlowSocketServer {
     const series = engine.getRatioSeries();
     const lastPoint = series[series.length - 1];
     if (aggregate && lastPoint) {
-      socket.emit('ratio-update', aggregate, engine.getSectors(), lastPoint);
+      socket.emit('ratio-update', aggregate, engine.getSectors(), lastPoint, engine.marketContext);
     }
     socket.emit('connection-status', engine.status());
 

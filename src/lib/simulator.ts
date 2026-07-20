@@ -20,6 +20,9 @@ interface SimState {
   callSkew: number; // 0..1 share of volume that is calls
   spikeCyclesLeft: number;
   spikeMultiplier: number;
+  iv30: number;
+  ivRank: number;
+  rrSkew: number;
 }
 
 function seededRandom(seed: number): () => number {
@@ -55,6 +58,9 @@ export class FlowSimulator {
       callSkew: 0.45 + rand() * 0.15,
       spikeCyclesLeft: 0,
       spikeMultiplier: 1,
+      iv30: 18 + rand() * 55,
+      ivRank: Math.round(rand() * 100),
+      rrSkew: -6 + rand() * 8,
     };
     this.state.set(symbol, st);
     return st;
@@ -91,6 +97,17 @@ export class FlowSimulator {
     st.putPremium += putAdd * avgOptionPrice * 100;
     st.price *= 1 + (Math.random() - 0.5) * 0.002 + (st.callSkew - 0.5) * 0.0008;
 
+    // Vol surface drifts slowly; spikes push IV and skew around.
+    st.iv30 = Math.max(10, Math.min(120, st.iv30 + (Math.random() - 0.5) * 0.6 + (spike > 1 ? 1.5 : 0)));
+    st.rrSkew = Math.max(-15, Math.min(10, st.rrSkew + (Math.random() - 0.5) * 0.4 + (st.callSkew - 0.5) * 0.3));
+
+    const totalOI = st.dailyTarget * 8;
+    const putOI = Math.round(totalOI * (1 - st.callSkew) * (0.8 + Math.random() * 0.4));
+    const callOI = Math.round(totalOI * st.callSkew * (0.8 + Math.random() * 0.4));
+    const termSlope = spike > 1 ? -1.5 - Math.random() * 3 : 1 + Math.random() * 3;
+    const strikeStep = Math.max(1, Math.round(st.price / 20));
+    const atm = Math.round(st.price / strikeStep) * strikeStep;
+
     return {
       symbol,
       putVolume: st.putVolume,
@@ -101,6 +118,30 @@ export class FlowSimulator {
       priceChangePct: (st.price / st.openPrice - 1) * 100,
       contractsSeen: 40 + Math.floor(Math.random() * 200),
       largestContractVolume: Math.round(cycleVolume * (0.05 + Math.random() * (spike > 1 ? 0.9 : 0.3))),
+      iv30: Number(st.iv30.toFixed(1)),
+      iv30Change: Number(((Math.random() - 0.5) * 2).toFixed(2)),
+      analytics: {
+        rrSkew25: Number(st.rrSkew.toFixed(2)),
+        atmIvNear: Number((st.iv30 - termSlope / 2).toFixed(1)),
+        atmIvFar: Number((st.iv30 + termSlope / 2).toFixed(1)),
+        termSlope: Number(termSlope.toFixed(2)),
+        backwardated: termSlope < -0.5,
+        eventExpiry: spike > 1 ? new Date(Date.now() + 12 * 86_400_000).toISOString().slice(0, 10) : null,
+        impliedMovePct: Number(((st.iv30 / 100) * Math.sqrt(14 / 365) * 100).toFixed(2)),
+        putOI,
+        callOI,
+        oiPutCall: callOI > 0 ? Number((putOI / callOI).toFixed(3)) : null,
+        maxPain: atm,
+        topStrikes: [-2, -1, 0, 1, 2].map((k) => ({
+          strike: atm + k * strikeStep,
+          putOI: Math.round((putOI / 8) * (1 - Math.abs(k) * 0.25)),
+          callOI: Math.round((callOI / 8) * (1 - Math.abs(k) * 0.25)),
+        })),
+        gexPer1Pct: Math.round((callOI - putOI) * st.price * 0.9),
+        leapIv: Number((st.iv30 * 0.85).toFixed(1)),
+        ivRank: st.ivRank,
+        hv20: Number((st.iv30 * (0.7 + Math.random() * 0.4)).toFixed(1)),
+      },
     };
   }
 }

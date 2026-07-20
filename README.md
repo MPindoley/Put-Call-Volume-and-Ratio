@@ -143,6 +143,32 @@ See [`.env.example`](.env.example) — `DATA_PROVIDER`, `MASSIVE_API_KEY`,
 `MASSIVE_RPM`, `CBOE_RPM`, `DATABASE_URL`, `PORT`, `POLL_INTERVAL_SEC`,
 `MAX_TICKERS` (legacy `POLYGON_*` names still honored).
 
+## Volatility & positioning metrics (v5)
+
+Computed every cycle from the same free chain data — per contract IV, delta,
+gamma and open interest:
+
+| Metric | Where | Meaning |
+|---|---|---|
+| **IV30** (+day change) | table + detail | 30-day implied volatility — the market's move forecast |
+| **IV Rank** | table + detail | Percentile of IV30 vs stored history (needs DB; matures toward 52wk) |
+| **HV20 / IV−HV spread** | detail | Realized vol from CBOE daily history; IV≫HV = fear premium |
+| **25Δ risk reversal** | table + detail | Call IV − put IV. Negative = normal put skew; positive = speculative call chasing |
+| **Term structure** | detail | ~30d vs ~90d ATM IV; backwardation = imminent-event fear; bulge expiry = likely catalyst date |
+| **Implied move** | detail | ATM straddle of nearest expiry as ±% |
+| **OI P/C & OI Δ** | table + detail | Positioning (held, not just traded); rising OI + volume = new conviction |
+| **Max pain / OI walls** | detail | Strike magnets near expiry |
+| **Dealer gamma (GEX)** | detail | + = dealers dampen moves; − = dealers amplify |
+| **LEAP IV** | detail | Long-horizon uncertainty |
+| **Equity vs ETF/Index P/C** | ratio panel | Retail sentiment vs institutional hedging, split |
+| **VIX vs VIX3M** | ratio panel | Market-wide contango/backwardation regime |
+
+**Not included (and why):** sweep/block-at-ask order tagging requires
+tick-level trade data (paid real-time feeds only — Massive Advanced tier);
+short interest and insider transactions come from different data sources and
+are candidates for a later version. None of these metrics is predictive alone
+— they're a sentiment mosaic, not trade signals.
+
 ## Intelligence jobs (require a database)
 
 With `DATABASE_URL` set (see [docs/DATABASE-SETUP.md](docs/DATABASE-SETUP.md)),

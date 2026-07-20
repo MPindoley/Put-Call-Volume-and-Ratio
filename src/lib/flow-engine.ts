@@ -14,12 +14,14 @@ import type {
   AppSettings,
   ConnectionStatus,
   DataSourceMode,
+  MarketContext,
   RatioPoint,
   SectorRatio,
   SpikeAlert,
   TickerFlow,
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
+import { computeChainAnalytics } from './chain-analytics';
 import { apiStats } from './data-source';
 import type { OptionsChainAggregate } from './provider';
 import { aggregateRatio, percentileRank, putCallRatio, sectorRatios } from './ratio-calculator';
@@ -51,6 +53,14 @@ interface TickerState {
 
 export type AlertListener = (alert: SpikeAlert) => void;
 
+/** History-derived vol context per ticker, refreshed by the maintenance job. */
+export interface VolContext {
+  ivRank: number | null;
+  hv20: number | null;
+  /** Yesterday's total OI, for day-over-day OI change. */
+  prevTotalOI: number | null;
+}
+
 export class FlowEngine {
   private tickers = new Map<string, TickerState>();
   private alerts: SpikeAlert[] = [];
@@ -61,6 +71,8 @@ export class FlowEngine {
   private alertSeq = 0;
 
   readonly detector = new SpikeDetector();
+  readonly volContext = new Map<string, VolContext>();
+  marketContext: MarketContext | null = null;
   settings: AppSettings = { ...DEFAULT_SETTINGS };
   mode: DataSourceMode = 'simulated';
   lastPollAt = 0;
@@ -128,6 +140,19 @@ export class FlowEngine {
       this.settings,
     );
 
+    // Chain analytics: simulator supplies them; live providers pass contracts.
+    const analytics =
+      agg.analytics ??
+      (agg.contracts && agg.contracts.length > 0
+        ? computeChainAnalytics(agg.contracts, agg.underlyingPrice, now)
+        : null);
+    const ctx = this.volContext.get(agg.symbol);
+    const totalOI = analytics ? analytics.putOI + analytics.callOI : 0;
+    const oiChangePct =
+      ctx?.prevTotalOI && ctx.prevTotalOI > 0 && totalOI > 0
+        ? Number((((totalOI - ctx.prevTotalOI) / ctx.prevTotalOI) * 100).toFixed(2))
+        : null;
+
     const netFlow = callVolume - putVolume;
     st.flow = {
       symbol: agg.symbol,
@@ -146,6 +171,12 @@ export class FlowEngine {
       ratioSparkline: st.sparkline.map((p) => Number(p.ratio.toFixed(3))),
       underlyingPrice: agg.underlyingPrice,
       priceChangePct: agg.priceChangePct,
+      iv30: agg.iv30,
+      iv30Change: agg.iv30Change,
+      ivRank: ctx?.ivRank ?? analytics?.ivRank ?? null,
+      hv20: ctx?.hv20 ?? analytics?.hv20 ?? null,
+      oiChangePct,
+      analytics,
       lastUpdated: now,
       lastDelta: netFlow > 0 ? 'bullish' : netFlow < 0 ? 'bearish' : 'none',
     };
@@ -276,6 +307,12 @@ export class FlowEngine {
         ratioSparkline: [],
         underlyingPrice: 0,
         priceChangePct: 0,
+        iv30: null,
+        iv30Change: null,
+        ivRank: null,
+        hv20: null,
+        oiChangePct: null,
+        analytics: null,
         lastUpdated: 0,
         lastDelta: 'none',
       },
