@@ -1,9 +1,11 @@
 # Options Flow Dashboard — Put/Call Volume & Ratio
 
 Real-time options flow analytics for active trading: live put/call ratios, rolling
-5-minute flow, volume spike detection with unusual-activity scoring, and spike
-alerts across ~250 of the most options-liquid S&P 500 names (extendable to the
-full index).
+5-minute flow, volume spike detection with unusual-activity scoring, spike alerts,
+and an alert **accuracy scoreboard** across ~450 optionable US names — S&P 500
+core plus heavily traded NASDAQ/mid-cap/ADR tickers and sector ETFs, with the
+four index benchmarks (SPY = S&P 500, QQQ = NASDAQ-100, DIA = Dow 30,
+IWM = Russell 2000) pinned in a dedicated strip.
 
 ![stack](https://img.shields.io/badge/Next.js%2014-App%20Router-black) ![ts](https://img.shields.io/badge/TypeScript-strict-blue)
 
@@ -141,11 +143,27 @@ See [`.env.example`](.env.example) — `DATA_PROVIDER`, `MASSIVE_API_KEY`,
 `MASSIVE_RPM`, `CBOE_RPM`, `DATABASE_URL`, `PORT`, `POLL_INTERVAL_SEC`,
 `MAX_TICKERS` (legacy `POLYGON_*` names still honored).
 
+## Intelligence jobs (require a database)
+
+With `DATABASE_URL` set (see [docs/DATABASE-SETUP.md](docs/DATABASE-SETUP.md)),
+a maintenance job runs at startup and every 2 hours:
+
+- **Baselines** — rolls stored 5-min snapshots into per-ticker 20-day average
+  daily volume + stddev, feeding the spike detector real expectations.
+- **Alert accuracy** — every alert is scored against the underlying's move
+  ~1 trading day later; the **Accuracy** tab shows hit rates by severity
+  (put-heavy alert → down move = hit, call-heavy → up move = hit).
+- **Retention** — snapshots kept 35 days, ratio history 90, alerts 120.
+
+The **Leaders** tab (most unusual, premium leaders, strongest directional
+flow) works with or without a database.
+
 ## Extending the universe
 
 Edit `src/lib/universe.ts` — add symbols under their GICS sector and raise
-`MAX_TICKERS`. Everything downstream (polling, ratios, heatmap, filters)
-follows automatically.
+`MAX_TICKERS`, then run `node scripts/validate-universe.mjs` to confirm every
+symbol resolves on the CBOE feed. Everything downstream (polling, ratios,
+heatmap, filters) follows automatically.
 
 ## Deployment (Railway, single service)
 

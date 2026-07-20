@@ -11,35 +11,38 @@ import { cn, formatCompact, formatPremium, formatTime } from '@/lib/utils';
 import { useAlerts } from '@/hooks/useAlerts';
 import type { SpikeAlert } from '@/types';
 
-export function AlertFeed(): JSX.Element {
+export function AlertFeed({ embedded = false }: { embedded?: boolean }): JSX.Element {
   const { alerts } = useAlerts();
+
+  const body =
+    alerts.length === 0 ? (
+      <p className="py-8 text-center text-xs text-slate-500">No unusual activity detected yet.</p>
+    ) : (
+      <ul>
+        {alerts.map((a) => (
+          <li key={a.id} className="border-b border-surface-border/50 px-3 py-2 hover:bg-surface-overlay/40">
+            <a href={`/ticker/${a.symbol}`} className="block">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-slate-100">{a.symbol}</span>
+                <SpikeBadge level={a.level} />
+                <span className="ml-auto text-[10px] text-slate-500 tnum">{formatTime(a.createdAt)}</span>
+              </div>
+              <p className="mt-0.5 text-[11px] text-slate-400">{a.message}</p>
+              <p className="mt-0.5 text-[10px] text-slate-500 tnum">
+                {formatCompact(a.contracts)} contracts · {formatPremium(a.premium)} premium
+              </p>
+            </a>
+          </li>
+        ))}
+      </ul>
+    );
+
+  if (embedded) return body;
 
   return (
     <Card className="flex min-h-0 flex-1 flex-col">
       <CardHeader title="Spike Alerts" right={<span className="text-[10px] text-slate-500 tnum">{alerts.length}</span>} />
-      <div className="min-h-0 flex-1 overflow-auto">
-        {alerts.length === 0 ? (
-          <p className="py-8 text-center text-xs text-slate-500">No unusual activity detected yet.</p>
-        ) : (
-          <ul>
-            {alerts.map((a) => (
-              <li key={a.id} className="border-b border-surface-border/50 px-3 py-2 hover:bg-surface-overlay/40">
-                <a href={`/ticker/${a.symbol}`} className="block">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-slate-100">{a.symbol}</span>
-                    <SpikeBadge level={a.level} />
-                    <span className="ml-auto text-[10px] text-slate-500 tnum">{formatTime(a.createdAt)}</span>
-                  </div>
-                  <p className="mt-0.5 text-[11px] text-slate-400">{a.message}</p>
-                  <p className="mt-0.5 text-[10px] text-slate-500 tnum">
-                    {formatCompact(a.contracts)} contracts · {formatPremium(a.premium)} premium
-                  </p>
-                </a>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <div className="min-h-0 flex-1 overflow-auto">{body}</div>
     </Card>
   );
 }

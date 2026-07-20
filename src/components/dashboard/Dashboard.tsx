@@ -9,11 +9,13 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { useOptionsFlow } from '@/hooks/useOptionsFlow';
 import { useWebSocket } from '@/hooks/useWebSocket';
-import { AlertFeed, AlertToasts } from './AlertFeed';
+import { AlertToasts } from './AlertFeed';
+import { BenchmarkStrip } from './BenchmarkStrip';
 import { FlowTable } from './FlowTable';
 import { NotificationBell } from './NotificationBell';
 import { RatioChart } from './RatioChart';
 import { RatioPanel } from './RatioPanel';
+import { RightPanel } from './RightPanel';
 import { SettingsPanel } from './SettingsPanel';
 import { StatusBar } from './StatusBar';
 
@@ -68,6 +70,9 @@ export function Dashboard(): JSX.Element {
 
       <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 xl:grid-cols-[1fr_360px]">
         <div className="flex min-h-0 flex-col gap-3">
+          <PanelBoundary name="benchmarks">
+            <BenchmarkStrip />
+          </PanelBoundary>
           <div className="grid shrink-0 grid-cols-1 gap-3 lg:grid-cols-2">
             <PanelBoundary name="ratio">
               <RatioPanel />
@@ -82,7 +87,7 @@ export function Dashboard(): JSX.Element {
         </div>
         <div className="flex min-h-0 flex-col">
           <PanelBoundary name="alerts">
-            <AlertFeed />
+            <RightPanel />
           </PanelBoundary>
         </div>
       </main>

@@ -12,6 +12,7 @@ import cron from 'node-cron';
 import type { Server } from 'socket.io';
 import { getDataProvider } from './data-source';
 import { getFlowEngine, type FlowEngine } from './flow-engine';
+import { persistAlert, runMaintenance, seedTickers } from './history-jobs';
 import { FlowSimulator } from './simulator';
 import { TRACKED_UNIVERSE } from './universe';
 import { tryDb, dbAvailable } from './db';
@@ -27,6 +28,7 @@ export class Poller {
   private lastFetched = new Map<string, number>();
   private running = false;
   private task: cron.ScheduledTask | null = null;
+  private maintenanceTask: cron.ScheduledTask | null = null;
 
   constructor(private io: IO | null) {
     this.engine = getFlowEngine();
@@ -42,16 +44,40 @@ export class Poller {
         `universe=${TRACKED_UNIVERSE.length} tickers, rate=${provider ? `${provider.bucket.perMinute}/min` : 'n/a'}`,
     );
 
-    void this.loadStoredState();
+    // Every fired alert is persisted for the accuracy scoreboard.
+    this.engine.onAlert((alert) => void persistAlert(alert));
+
+    void this.loadStoredState().then(() => runMaintenance(this.engine));
     void this.cycle(); // immediate first cycle
     this.task = cron.schedule(`*/${intervalSec} * * * * *`, () => void this.cycle());
+    // Baselines, alert scoring and retention: every 2 hours.
+    this.maintenanceTask = cron.schedule('11 */2 * * *', () => void runMaintenance(this.engine));
   }
 
   stop(): void {
     this.task?.stop();
+    this.maintenanceTask?.stop();
   }
 
   private async loadStoredState(): Promise<void> {
+    await seedTickers();
+    // Restore persisted settings so a restart keeps thresholds/watchlist.
+    await tryDb('load settings', async (db) => {
+      const stored = await db.userSettings.findUnique({ where: { id: 1 } });
+      if (stored) {
+        this.engine.settings = {
+          ...this.engine.settings,
+          sensitivity: stored.sensitivity,
+          minPremium: stored.minPremium,
+          minContracts: stored.minContracts,
+          updateFrequencySec: stored.updateFrequencySec,
+          soundEnabled: stored.soundEnabled,
+          timezone: stored.timezone,
+          hiddenColumns: stored.hiddenColumns,
+          watchlist: stored.watchlist,
+        };
+      }
+    });
     // Seed spike baselines and ratio history from the DB when available.
     await tryDb('load baselines', async (db) => {
       const baselines = await db.volumeBaseline.findMany({
