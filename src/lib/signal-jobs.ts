@@ -18,6 +18,7 @@
 import type { PrismaClient } from '@prisma/client';
 import { getAnalyticsConfig } from './analytics-config';
 import { tryDb } from './db';
+import { finalizedMetricWhere } from './finalized-reads';
 import type { FlowEngine } from './flow-engine';
 import { defaultInstrument, interpretDivergence, loadInstrumentConfigs } from './interpretation';
 import { loadBenchmarkResolver } from './sector-benchmarks';
@@ -50,7 +51,7 @@ export async function logSignals(engine: FlowEngine, now = new Date()): Promise<
       if (!regime?.final) return 0; // signals only fire against a finalized regime row
 
       const dms = await db.dailyMetric.findMany({
-        where: { date, final: true, historicalCloseOnly: false, ...NOT_SEEDED },
+        where: finalizedMetricWhere({ date, historicalCloseOnly: false }),
       });
       const rels = await db.relativeMetric.findMany({ where: { date, final: true, ...NOT_SEEDED } });
       const relBySym = new Map(rels.map((r) => [r.symbol, r]));
@@ -212,7 +213,7 @@ export async function trackBackwardationEpisodes(now = new Date()): Promise<void
     const regime = await db.dailyRegime.findUnique({ where: { date } });
     if (!regime?.final) return;
     const dms = await db.dailyMetric.findMany({
-      where: { date, final: true, historicalCloseOnly: false, termSlope: { not: null }, ...NOT_SEEDED },
+      where: finalizedMetricWhere({ date, historicalCloseOnly: false, termSlope: { not: null } }),
       select: { symbol: true, termSlope: true, atmIvNear: true, atmIvFar: true, iv30: true, close: true },
     });
     for (const dm of dms) {
@@ -303,7 +304,9 @@ export async function scoreSignals(now = new Date()): Promise<number> {
   return (
     (await tryDb('score signals', async (db) => {
       const spyRows = await db.dailyMetric.findMany({
-        where: { symbol: 'SPY', close: { not: null }, ...NOT_SEEDED },
+        // finalizedMetricWhere → final + non-seeded (structural guard); `close` is
+        // additionally null on provisional rows, so real closes only (L2-1).
+        where: finalizedMetricWhere({ symbol: 'SPY', close: { not: null } }),
         orderBy: { date: 'asc' },
         select: { date: true, close: true },
       });
@@ -321,7 +324,7 @@ export async function scoreSignals(now = new Date()): Promise<number> {
         const hit = closesCache.get(symbol);
         if (hit) return hit;
         const rows = await db.dailyMetric.findMany({
-          where: { symbol, close: { not: null }, ...NOT_SEEDED },
+          where: finalizedMetricWhere({ symbol, close: { not: null } }),
           select: { date: true, close: true },
         });
         const map = new Map(rows.map((r) => [iso(r.date), r.close as number]));

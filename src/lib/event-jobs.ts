@@ -12,6 +12,7 @@
 import type { PrismaClient } from '@prisma/client';
 import { getAnalyticsConfig } from './analytics-config';
 import { tryDb } from './db';
+import { finalizedMetricWhere } from './finalized-reads';
 import { realizedEventMove, type GaugeEvent, type ReportTiming } from './earnings';
 import { EdgarClient, type EdgarCacheStore } from './edgar';
 import {
@@ -33,7 +34,7 @@ const iso = (d: Date): string => d.toISOString().slice(0, 10);
 /** All tracked tickers' dated closes in one pass, keyed by symbol (ascending). */
 async function allClosesBySymbol(db: PrismaClient): Promise<Map<string, DailyClose[]>> {
   const rows = await db.dailyMetric.findMany({
-    where: { close: { not: null }, ...NOT_SEEDED },
+    where: finalizedMetricWhere({ close: { not: null } }),
     orderBy: { date: 'asc' },
     select: { symbol: true, date: true, close: true },
   });

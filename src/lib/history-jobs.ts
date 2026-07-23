@@ -19,6 +19,7 @@ import { historicalVol, ivRank } from './chain-analytics';
 import { CboeClient } from './cboe';
 import { getDataProvider } from './data-source';
 import { tryDb } from './db';
+import { finalizedMetricWhere } from './finalized-reads';
 import { refreshEarningsRealized, refreshEventGauges, refreshIdiosyncraticEvents } from './event-jobs';
 import { recordDailyRegime } from './regime-jobs';
 import { logSignals, scoreSignals, trackBackwardationEpisodes } from './signal-jobs';
@@ -174,7 +175,7 @@ export async function recordDailyMetrics(engine: FlowEngine): Promise<void> {
   await tryDb('record daily metrics', async (db) => {
     const today = etDateKey();
     const finalizedToday = new Set(
-      (await db.dailyMetric.findMany({ where: { date: today, final: true, ...NOT_SEEDED }, select: { symbol: true } })).map(
+      (await db.dailyMetric.findMany({ where: finalizedMetricWhere({ date: today }), select: { symbol: true } })).map(
         (r) => r.symbol,
       ),
     );
@@ -184,7 +185,11 @@ export async function recordDailyMetrics(engine: FlowEngine): Promise<void> {
       const data = {
         iv30: flow.iv30,
         hv20: flow.hv20,
-        close: flow.underlyingPrice > 0 ? flow.underlyingPrice : null,
+        // Provisional rows NEVER carry `close` — the intraday price goes to
+        // `liveClose` so no close-based statistic can ever read an unsettled value.
+        // `close` is set only by finalizeDailyCapture / backfill (both final=true).
+        close: null,
+        liveClose: flow.underlyingPrice > 0 ? flow.underlyingPrice : null,
         putOI: flow.analytics ? flow.analytics.putOI : null,
         callOI: flow.analytics ? flow.analytics.callOI : null,
         rrSkew: flow.analytics?.rrSkew25 ?? null,
@@ -290,7 +295,7 @@ export async function refreshVolContext(engine: FlowEngine, hvBudget = 60): Prom
   await tryDb('refresh vol context', async (db) => {
     const since = new Date(Date.now() - 370 * DAY_MS);
     const rows = await db.dailyMetric.findMany({
-      where: { date: { gte: since }, ...NOT_SEEDED },
+      where: finalizedMetricWhere({ date: { gte: since } }), // finalized rows only — IV-rank history + OI tiebreaker never read a provisional value (L2-2)
       orderBy: { date: 'asc' },
       select: { symbol: true, date: true, iv30: true, hv20: true, putOI: true, callOI: true, rrSkew: true },
     });

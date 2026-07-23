@@ -36,6 +36,7 @@ import { classifyDivergence, defaultInstrument, interpretDivergence } from './in
 import { iqrBounds, linregSlope, median, percentileRank, quantile, slopeTStat, slopeTStatNW, weightedMean, zScoreGuarded } from './sector-stats';
 import { TRACKED_UNIVERSE } from './universe';
 import { tryDb } from './db';
+import { finalizedMetricWhere } from './finalized-reads';
 import { NOT_SEEDED } from './seed-guard';
 import { etDateKey } from './trading-calendar';
 import type { SectorRelative, SectorDispersion } from '@/types';
@@ -229,7 +230,7 @@ export async function finalizeDailyCapture(engine: FlowEngine, now = new Date())
 
     // 2. Cohort aggregates from finalized rows for `date`.
     const finalRows = (await db.dailyMetric.findMany({
-      where: { date, final: true, ...NOT_SEEDED },
+      where: finalizedMetricWhere({ date }),
       select: DAILY_SELECT,
     })) as DailyRow[];
     const rowBySymbol = new Map(finalRows.map((r) => [r.symbol, r]));
@@ -339,7 +340,7 @@ async function loadCaps(db: PrismaClient): Promise<Map<string, number>> {
 /** OLS slope of the trailing 20 finalized/historical closes including today. */
 async function computePriceTrend(db: PrismaClient, symbol: string, date: Date, todayClose: number): Promise<number | null> {
   const prior = await db.dailyMetric.findMany({
-    where: { symbol, date: { lt: date }, close: { not: null }, ...NOT_SEEDED },
+    where: finalizedMetricWhere({ symbol, date: { lt: date }, close: { not: null } }),
     orderBy: { date: 'desc' },
     take: 19,
     select: { close: true },
@@ -436,9 +437,9 @@ async function computeDivergence(
   if (todaySkewZ30 !== null) skewSeries.push(todaySkewZ30);
   if (skewSeries.length < cfg.divergenceWindow) return { ...empty, divergenceWindow: skewSeries.length };
 
-  // Price series over the same window (includes today's finalized close).
+  // Price series over the same window (finalized closes only — includes today's, L2-1).
   const closeRows = await db.dailyMetric.findMany({
-    where: { symbol, date: { lte: date }, close: { not: null }, ...NOT_SEEDED },
+    where: finalizedMetricWhere({ symbol, date: { lte: date }, close: { not: null } }),
     orderBy: { date: 'desc' },
     take: cfg.divergenceWindow,
     select: { close: true },
@@ -517,7 +518,7 @@ async function ensureConsistentMethod(
   if (!rows.some((r) => r.dispersionWeightMethod !== null && r.dispersionWeightMethod !== method)) return;
 
   for (const r of rows) {
-    const dayRows = (await db.dailyMetric.findMany({ where: { date: r.date, final: true, ...NOT_SEEDED }, select: DAILY_SELECT })) as DailyRow[];
+    const dayRows = (await db.dailyMetric.findMany({ where: finalizedMetricWhere({ date: r.date }), select: DAILY_SELECT })) as DailyRow[];
     const constituents = dayRows
       .filter((d) => resolver.benchmarkFor(d.symbol) === cohortKey && !resolver.isBenchmark(d.symbol))
       .map((d) => toConstituent(d, caps.get(d.symbol) ?? null))

@@ -19,6 +19,7 @@
  */
 import { getAnalyticsConfig } from './analytics-config';
 import { tryDb } from './db';
+import { finalizedMetricWhere } from './finalized-reads';
 import { regimeConfigVersion } from './regime';
 import { loadBenchmarkResolver } from './sector-benchmarks';
 import { NOT_SEEDED } from './seed-guard';
@@ -155,7 +156,7 @@ export async function buildRegimeMatrixData(horizon: Horizon, basis: Basis): Pro
 
     // ── Canonical sessions + regime lookup ──
     const spyRows = await db.dailyMetric.findMany({
-      where: { symbol: 'SPY', close: { not: null }, ...NOT_SEEDED },
+      where: finalizedMetricWhere({ symbol: 'SPY', close: { not: null } }),
       orderBy: { date: 'asc' },
       select: { date: true, close: true },
     });
@@ -206,7 +207,7 @@ export async function buildRegimeMatrixData(horizon: Horizon, basis: Basis): Pro
 
     // ── Base-rate universe: one pass over persisted daily state ──
     const dms = await db.dailyMetric.findMany({
-      where: { ...NOT_SEEDED },
+      where: finalizedMetricWhere(),
       select: {
         symbol: true,
         date: true,
@@ -224,7 +225,9 @@ export async function buildRegimeMatrixData(horizon: Horizon, basis: Basis): Pro
     });
     const closes = new Map<string, Map<string, number>>();
     for (const r of dms) {
-      if (r.close === null) continue;
+      // Only FINAL closes feed base-rate forward returns; provisional intraday rows
+      // (final:false) are excluded so a live price never reaches the base rate (L2-1).
+      if (r.close === null || !r.final) continue;
       const m = closes.get(r.symbol) ?? new Map<string, number>();
       m.set(iso(r.date), r.close);
       closes.set(r.symbol, m);

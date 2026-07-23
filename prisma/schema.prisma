@@ -38,7 +38,14 @@ model DailyMetric {
   date                DateTime
   iv30                Float?
   hv20                Float?
+  /// Official settled close — written ONLY on finalized/backfill rows. A
+  /// provisional intraday row leaves this null (its live value lives in `liveClose`),
+  /// so `close: { not: null }` structurally excludes provisional rows from every
+  /// close-based statistic even if a query forgets the `final: true` filter.
   close               Float?
+  /// Live intraday underlying price on a provisional row (never a statistic input);
+  /// lets the UI show a current price before the session finalizes.
+  liveClose           Float?
   putOI               Float?
   callOI              Float?
   rrSkew              Float?

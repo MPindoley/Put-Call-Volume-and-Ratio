@@ -12,6 +12,7 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import { AlertToasts } from './AlertFeed';
 import { BenchmarkStrip } from './BenchmarkStrip';
 import { FlowTable } from './FlowTable';
+import { KeyboardShortcuts } from './KeyboardShortcuts';
 import { NotificationBell } from './NotificationBell';
 import { RatioChart } from './RatioChart';
 import { RatioPanel } from './RatioPanel';
@@ -96,6 +97,7 @@ export function Dashboard(): JSX.Element {
       </main>
 
       <AlertToasts />
+      <KeyboardShortcuts />
     </div>
   );
 }

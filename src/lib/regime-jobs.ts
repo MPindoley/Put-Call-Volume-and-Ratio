@@ -16,6 +16,7 @@ import { getAnalyticsConfig, type AnalyticsConfig } from './analytics-config';
 import { CboeClient } from './cboe';
 import { getDataProvider } from './data-source';
 import { tryDb } from './db';
+import { finalizedMetricWhere } from './finalized-reads';
 import type { FlowEngine } from './flow-engine';
 import { INITIAL_HYSTERESIS, nextRegime, regimeConfigVersion, type HysteresisState, type RegimeCell } from './regime';
 import { median } from './sector-stats';
@@ -51,9 +52,10 @@ export async function recordDailyRegime(engine: FlowEngine, now = new Date()): P
       // Vol input.
       const vixSpread = engine.marketContext?.vixSpread ?? null;
 
-      // Trend input: SPY (SPX proxy) close + 50-day MA from stored closes.
+      // Trend input: SPY (SPX proxy) close + 50-day MA from FINAL closes only
+      // (never a provisional intraday row — review finding L2-1).
       const spyRows = await db.dailyMetric.findMany({
-        where: { symbol: 'SPY', close: { not: null }, date: { lte: date }, ...NOT_SEEDED },
+        where: finalizedMetricWhere({ symbol: 'SPY', close: { not: null }, date: { lte: date } }),
         orderBy: { date: 'desc' },
         take: 50,
         select: { close: true },
@@ -141,7 +143,7 @@ export async function backfillRegimeHistory(now = new Date()): Promise<number> {
       if ((await db.dailyRegime.count()) > 0) return 0; // already seeded
 
       const spyRows = await db.dailyMetric.findMany({
-        where: { symbol: 'SPY', close: { not: null }, ...NOT_SEEDED },
+        where: finalizedMetricWhere({ symbol: 'SPY', close: { not: null } }),
         orderBy: { date: 'asc' },
         select: { date: true, close: true },
       });

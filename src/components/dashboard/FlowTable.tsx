@@ -34,7 +34,12 @@ const COLUMNS: { key: SortKey | null; label: string; className: string; title?: 
   { key: 'lastUpdated', label: 'Updated', className: 'w-16 text-right' },
 ];
 
-/** z-score cell: colored by magnitude, dash while the window is still filling. */
+/**
+ * z-score cell rendered as BACKGROUND INTENSITY, not a printed number
+ * (UI-CONSTRAINTS §3): hue by sign (green bullish z<0 / red bearish z>0, one
+ * colour meaning), opacity ∝ |z| saturating near |z|=3; the value shows on hover.
+ * A muted `—` while the window is still filling (§4).
+ */
 function ZCell({ z, window }: { z: number | null; window: number }): JSX.Element {
   if (z === null) {
     return (
@@ -44,16 +49,28 @@ function ZCell({ z, window }: { z: number | null; window: number }): JSX.Element
     );
   }
   const mag = Math.abs(z);
+  const intensity = Math.min(mag / 3, 1); // saturate near |z| = 3
+  // Bearish (skew rising vs peers) = red; bullish = green. Sub-1σ stays neutral.
+  const rgb = mag < 1 ? '148,163,184' : z > 0 ? '248,113,113' : '74,222,128';
   return (
     <span
-      className={cn(
-        'w-16 text-right tnum',
-        mag >= 2 ? 'font-semibold' : '',
-        z >= 1 ? 'text-bearish' : z <= -1 ? 'text-bullish' : 'text-slate-400',
-      )}
+      className="flex w-16 items-center justify-end"
+      title={`z ${z >= 0 ? '+' : ''}${z.toFixed(2)} (${window}-day) — ${
+        mag < 1 ? 'within 1σ of sector history' : `${mag.toFixed(1)}σ ${z > 0 ? 'above (bearish)' : 'below (bullish)'}`
+      }`}
     >
-      {z >= 0 ? '+' : ''}
-      {z.toFixed(1)}
+      <span
+        aria-hidden
+        className="h-4 rounded-sm"
+        style={{
+          width: `${Math.round(20 + intensity * 24)}px`,
+          backgroundColor: `rgba(${rgb},${(0.12 + intensity * 0.68).toFixed(2)})`,
+        }}
+      />
+      <span className="sr-only">
+        {z >= 0 ? '+' : ''}
+        {z.toFixed(1)}
+      </span>
     </span>
   );
 }
@@ -207,9 +224,10 @@ export function FlowTable({ isLoading }: { isLoading: boolean }): JSX.Element {
       {/* Filter row */}
       <div className="flex flex-wrap items-center gap-2 border-b border-surface-border px-3 py-2">
         <input
+          id="ticker-search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search ticker…"
+          placeholder="Search ticker… ( / )"
           className="w-36 rounded border border-surface-border bg-surface px-2 py-1 text-xs text-slate-200 placeholder:text-slate-600 focus:border-blue-500 focus:outline-none"
           aria-label="Search ticker"
         />
