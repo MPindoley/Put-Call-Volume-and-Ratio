@@ -31,6 +31,9 @@ export interface RawContract {
   volume: number;
   /** Mid price (bid/ask midpoint, falling back to last trade). */
   mid: number;
+  /** Bid/ask when the provider supplies them — used for the event quote-width gate. */
+  bid?: number;
+  ask?: number;
 }
 
 /** Derived per-chain analytics: skew, term structure, OI, dealer gamma. */
@@ -72,6 +75,73 @@ export interface MarketContext {
   updatedAt: number;
 }
 
+/**
+ * Per-ticker sector-relative z-scores (Phase 1). Each is the ticker's
+ * (value − sector median) spread expressed as a z-score against its own
+ * finalized 30/90-day rolling history. Null while accumulating.
+ */
+export interface SectorRelative {
+  symbol: string;
+  /** The peer cohort this name is measured against (benchmark ETF key + label). */
+  cohort: string | null;
+  cohortLabel: string | null;
+  skewZ30: number | null;
+  skewZ90: number | null;
+  ivZ30: number | null;
+  ivZ90: number | null;
+  oiPcZ30: number | null;
+  oiPcZ90: number | null;
+  ivHvZ30: number | null;
+  ivHvZ90: number | null;
+  /** Finalized rows available in the 90-day window (for "accumulating N/90"). */
+  windowDays: number;
+  regimeDetach: boolean;
+  regimeDetachMetric: string | null;
+  regimeDetachDir: string | null;
+  /** Phase 2 divergence (inverse-adjusted to underlying exposure), or null. */
+  divergence: 'distribution' | 'accumulation' | null;
+  /** Skew-z points available for the divergence trend, and whether still warming. */
+  divergenceWindow: number;
+  /** OLS trend t-stats (the heuristic screen) and their Newey-West HAC audit values. */
+  priceTrendT: number | null;
+  skewTrendT: number | null;
+  priceTrendTNW: number | null;
+  skewTrendTNW: number | null;
+}
+
+/**
+ * Per-COHORT IV-dispersion proxy + median health. A cohort is a peer group
+ * keyed by its benchmark ETF (GICS SPDR, or an industry ETF for overridden
+ * names like semis→SMH). `constituentCount` and `medianIqr` are the
+ * median-health signals (did a name's spread move, or did the cohort shift?).
+ */
+export interface SectorDispersion {
+  cohort: string;
+  label: string;
+  proxy: number | null;
+  /** Weighting stamped on this value: 'cap' | 'oi' | 'equal'. */
+  weightMethod: string | null;
+  /** Current value's percentile within its own same-version 90-day series. */
+  pct90: number | null;
+  sampleDays: number;
+  constituentCount: number;
+  /** Interquartile range of member IV30 — cohort dispersion of the peer set. */
+  medianIqr: number | null;
+  /** Composition-definition version; a change resets the rolling windows. */
+  compositionVersion: string;
+}
+
+/** IV-direction OI tiebreaker classification for one side (call or put). */
+export type OiSignal = 'demand' | 'supply' | 'unwind' | 'short-cover' | null;
+
+export interface SideFlow {
+  /** Day-over-day OI change for this side, %. */
+  oiChangePct: number | null;
+  /** Decomposed day IV change for this side (vol points). */
+  ivChange: number | null;
+  signal: OiSignal;
+}
+
 /** One row of the live flow table. Everything the client renders per ticker. */
 export interface TickerFlow {
   symbol: string;
@@ -109,10 +179,71 @@ export interface TickerFlow {
   /** Day-over-day change in total open interest, %. */
   oiChangePct: number | null;
   analytics: ChainAnalytics | null;
+  /** Inverse product (interpretation flips to underlying exposure) + leverage. */
+  inverse: boolean;
+  leverage: number;
+  /**
+   * IV-direction OI tiebreaker per side (demand/supply/unwind/short-cover),
+   * plus the RAW shared inputs (underlying IV30 day-change and skew day-change)
+   * used to decompose per-side IV — surfaced so thin decompositions (large
+   * |skewChange| relative to |iv30Change|) can be audited.
+   */
+  oiSignals: { call: SideFlow; put: SideFlow; iv30Change: number | null; skewChange: number | null } | null;
+  /** Sector-relative z-scores; null until the EOD capture has run with history. */
+  sectorRelative: SectorRelative | null;
+  /** Earnings/event implied-move + rich/cheap gauge; null until events exist. */
+  eventGauge: EventGauge | null;
+  /** Recent large unscheduled single-name moves (idiosyncratic feed); newest first. */
+  idiosyncraticMoves: IdiosyncraticMove[];
   /** Epoch ms of last successful data refresh for this ticker. */
   lastUpdated: number;
   /** Direction of the most recent net-flow delta, used for row flashing. */
   lastDelta: 'bullish' | 'bearish' | 'none';
+}
+
+/** Provenance of the active catalyst: confirmed calendar sources, or an unconfirmed live bulge. */
+export type EventSource = 'manual' | 'forward' | 'bulge';
+export type ReportTiming = 'bmo' | 'amc' | 'unknown';
+
+/**
+ * Per-ticker earnings/event surface: the live two-expiry implied event move plus
+ * the rich/cheap gauge that ranks it against the realized-move distribution of
+ * CONFIRMED events (manual + forward-confirmed) only. The gauge stays suppressed
+ * (`display=false`) until a ticker has enough confirmed events — a plain
+ * "insufficient confirmed history" state, not a number. Inferred price moves never
+ * feed this; they live in the separate idiosyncratic feed.
+ */
+export interface EventGauge {
+  /** Active catalyst date (ET ISO) the implied move is measured to, if any. */
+  eventDate: string | null;
+  eventSource: EventSource | null;
+  reportTiming: ReportTiming | null;
+  /** Live implied one-session event move as a fraction of spot (sqrt(v_e)). */
+  impliedMove: number | null;
+  impliedMethod: 'pre-event-reference' | 'two-post-event' | null;
+  /** Clean diffusive vol (decimal annualized) backed out alongside the event move. */
+  diffusiveVol: number | null;
+  /** Why the decomposition refused (guardrail 1/3), surfaced rather than hidden. */
+  refusedReason: string | null;
+  /** True once ≥requiredCount confirmed events with realized moves exist. */
+  display: boolean;
+  confirmedCount: number;
+  requiredCount: number;
+  /** Median confirmed realized move (fraction). */
+  medianRealized: number | null;
+  /** Implied move's percentile in the confirmed realized distribution (0–100). */
+  percentile: number | null;
+  /** implied ÷ median realized: >1 rich, <1 cheap. */
+  richCheapRatio: number | null;
+}
+
+/** One large unscheduled single-name move (the idiosyncratic-event feed). */
+export interface IdiosyncraticMove {
+  date: string;
+  /** Total single-session move magnitude, as a fraction of spot. */
+  movePct: number;
+  /** Residual (benchmark-adjusted) magnitude in robust sigmas. */
+  residualZ: number;
 }
 
 export interface SpikeAlert {
@@ -217,6 +348,7 @@ export interface ServerToClientEvents {
     sectors: SectorRatio[],
     point: RatioPoint,
     market: MarketContext | null,
+    dispersions: SectorDispersion[],
   ) => void;
   'connection-status': (status: ConnectionStatus) => void;
 }

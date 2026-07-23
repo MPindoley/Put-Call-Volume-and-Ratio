@@ -43,6 +43,21 @@ describe('buildExpiryQuotes', () => {
     expect(a.tradingDays).toBeGreaterThan(0);
   });
 
+  it('a next-trading-day expiry counts 1 trading day even mid-session (calendar-date anchor)', () => {
+    // REGRESSION (review finding L1-1): OCC expirations are midnight-UTC calendar
+    // dates; the naive ET conversion mapped them to the PREVIOUS ET day, so during
+    // the US session a Friday expiry counted 0 td on Thursday and was dropped.
+    const midSession = Date.UTC(2026, 7, 13, 15, 0); // Thu Aug 13 2026, 11:00 ET
+    const friExpiry = Date.UTC(2026, 7, 14); // Fri Aug 14, midnight-UTC encoded
+    const contracts = [
+      c({ type: 'call', expiration: friExpiry, iv: 0.4 }),
+      c({ type: 'put', expiration: friExpiry, iv: 0.4 }),
+    ];
+    const quotes = buildExpiryQuotes(contracts, 100, midSession);
+    expect(quotes).toHaveLength(1);
+    expect(quotes[0]!.tradingDays).toBe(1); // METRICS: next trading day counts 1
+  });
+
   it('reports Infinity width when the ATM strike has no two-sided quotes', () => {
     const noQuotes = chain.map((x) =>
       x.strike === 100 && x.expiration === expA ? { ...x, bid: undefined, ask: undefined } : x,

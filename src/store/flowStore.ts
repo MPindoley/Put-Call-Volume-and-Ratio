@@ -15,6 +15,7 @@ import type {
   ConnectionStatus,
   MarketContext,
   RatioPoint,
+  SectorDispersion,
   SectorRatio,
   SpikeAlert,
   TickerFlow,
@@ -32,6 +33,8 @@ export type SortKey =
   | 'ivRank'
   | 'rrSkew'
   | 'oiPutCall'
+  | 'skewZ30'
+  | 'skewZ90'
   | 'lastUpdated';
 
 export type FlowFilter = 'all' | 'bullish' | 'bearish' | 'unusual';
@@ -41,6 +44,7 @@ interface FlowState {
   aggregate: AggregateRatio | null;
   market: MarketContext | null;
   sectors: SectorRatio[];
+  dispersions: SectorDispersion[];
   ratioSeries: RatioPoint[];
   alerts: SpikeAlert[];
   status: ConnectionStatus | null;
@@ -63,6 +67,7 @@ interface FlowState {
     sectors: SectorRatio[],
     point: RatioPoint,
     market: MarketContext | null,
+    dispersions: SectorDispersion[],
   ) => void;
   applyStatus: (status: ConnectionStatus) => void;
   setSocketConnected: (connected: boolean) => void;
@@ -74,6 +79,7 @@ interface FlowState {
     aggregate: AggregateRatio | null;
     market: MarketContext | null;
     sectors: SectorRatio[];
+    dispersions: SectorDispersion[];
     ratioSeries: RatioPoint[];
     status: ConnectionStatus;
   }) => void;
@@ -94,6 +100,7 @@ export const useFlowStore = create<FlowState>()(
       aggregate: null,
       market: null,
       sectors: [],
+      dispersions: [],
       ratioSeries: [],
       alerts: [],
       status: null,
@@ -126,13 +133,13 @@ export const useFlowStore = create<FlowState>()(
         set({ rows: nextRows, flashes: nextFlashes });
       },
 
-      applyRatioUpdate: (aggregate, sectors, point, market) =>
+      applyRatioUpdate: (aggregate, sectors, point, market, dispersions) =>
         set((state) => {
           const series = [...state.ratioSeries];
           const last = series[series.length - 1];
           if (!last || point.time > last.time) series.push(point);
           else series[series.length - 1] = point;
-          return { aggregate, sectors, market, ratioSeries: series.slice(-500) };
+          return { aggregate, sectors, market, dispersions, ratioSeries: series.slice(-500) };
         }),
 
       applyStatus: (status) => set({ status }),
@@ -152,6 +159,7 @@ export const useFlowStore = create<FlowState>()(
           aggregate: data.aggregate,
           market: data.market,
           sectors: data.sectors,
+          dispersions: data.dispersions,
           ratioSeries: data.ratioSeries,
           status: data.status,
         }),
@@ -213,6 +221,8 @@ export function selectVisibleRows(state: FlowState): TickerFlow[] {
       case 'ivRank': return r.ivRank ?? -1;
       case 'rrSkew': return r.analytics?.rrSkew25 ?? -999;
       case 'oiPutCall': return r.analytics?.oiPutCall ?? -1;
+      case 'skewZ30': return r.sectorRelative?.skewZ30 ?? -999;
+      case 'skewZ90': return r.sectorRelative?.skewZ90 ?? -999;
       case 'lastUpdated': return r.lastUpdated;
     }
   };

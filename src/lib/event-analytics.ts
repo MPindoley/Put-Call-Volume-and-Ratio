@@ -18,6 +18,17 @@ import { tradingDaysBetween } from './trading-calendar';
 
 const DAY_MS = 86_400_000;
 
+/**
+ * OCC expirations (and stored event dates) are CALENDAR DATES encoded at
+ * midnight UTC. Passing that instant through the ET wall-clock conversion maps
+ * it to 19:00/20:00 ET of the PREVIOUS day, silently costing one trading day
+ * (a next-day expiry counted 0 and was dropped mid-session). Anchoring at noon
+ * UTC (07:00/08:00 ET year-round) keeps the intended calendar day under both
+ * EST and EDT. Applies ONLY to date-encoded values — real instants (`now`,
+ * EDGAR acceptance timestamps) must NOT be shifted.
+ */
+const asCalendarDate = (midnightUtcMs: number): Date => new Date(midnightUtcMs + DAY_MS / 2);
+
 interface ExpiryGroup {
   expiration: number;
   contracts: RawContract[];
@@ -26,7 +37,9 @@ interface ExpiryGroup {
 function groupByExpiry(contracts: RawContract[], now: number): ExpiryGroup[] {
   const map = new Map<number, RawContract[]>();
   for (const c of contracts) {
-    if ((c.expiration - now) / DAY_MS < 0.5) continue;
+    // Pre-filter only strictly-past dates (noon-anchored); the real gate is the
+    // tradingDays >= 1 check in buildExpiryQuotes.
+    if (asCalendarDate(c.expiration).getTime() - now < 0) continue;
     const list = map.get(c.expiration) ?? [];
     list.push(c);
     map.set(c.expiration, list);
@@ -71,7 +84,7 @@ export function buildExpiryQuotes(
     const ivs = atm.map((c) => normalizeIv(c.iv)).filter((v) => v > 0);
     if (ivs.length === 0) continue;
     const iv = ivs.reduce((s, v) => s + v, 0) / ivs.length;
-    const tradingDays = tradingDaysBetween(new Date(now), new Date(group.expiration));
+    const tradingDays = tradingDaysBetween(new Date(now), asCalendarDate(group.expiration));
     if (tradingDays < 1) continue;
     const atmOpenInterest = atm.reduce((s, c) => s + Math.max(0, c.openInterest), 0);
     const widths: number[] = [];
@@ -142,7 +155,7 @@ export function buildEventGauge(
     const res = computeEventMoveForChain(
       contracts,
       spot,
-      new Date(`${input.eventDate}T00:00:00Z`),
+      new Date(`${input.eventDate}T12:00:00Z`), // calendar date → noon anchor (see asCalendarDate)
       now,
       input.floor,
       (r) => {
