@@ -27,12 +27,46 @@ const COLUMNS: { key: SortKey | null; label: string; className: string; title?: 
   { key: 'ivRank', label: 'IVR', className: 'w-11 text-right', title: 'IV rank: percentile of IV30 vs stored history' },
   { key: 'rrSkew', label: 'Skew', className: 'w-14 text-right', title: '25Δ risk reversal (call IV − put IV, vol pts). Negative = normal put skew; positive = calls bid over puts' },
   { key: 'oiPutCall', label: 'OI P/C', className: 'w-14 text-right', title: 'Open-interest put/call ratio (positioning, not volume)' },
+  { key: 'skewZ30', label: 'zSkew30', className: 'w-16 text-right', title: 'Sector-relative skew z-score, 30-day window (ticker skew minus sector median, vs its own history)' },
+  { key: 'skewZ90', label: 'zSkew90', className: 'w-16 text-right', title: 'Sector-relative skew z-score, 90-day window' },
   { key: 'spikeScore', label: 'Unusual', className: 'w-28' },
   { key: null, label: 'P/C 30m', className: 'w-28' },
   { key: 'lastUpdated', label: 'Updated', className: 'w-16 text-right' },
 ];
 
+/** z-score cell: colored by magnitude, dash while the window is still filling. */
+function ZCell({ z, window }: { z: number | null; window: number }): JSX.Element {
+  if (z === null) {
+    return (
+      <span className="w-16 text-right tnum text-slate-600" title={`Accumulating — need ~${window} finalized days`}>
+        —
+      </span>
+    );
+  }
+  const mag = Math.abs(z);
+  return (
+    <span
+      className={cn(
+        'w-16 text-right tnum',
+        mag >= 2 ? 'font-semibold' : '',
+        z >= 1 ? 'text-bearish' : z <= -1 ? 'text-bullish' : 'text-slate-400',
+      )}
+    >
+      {z >= 0 ? '+' : ''}
+      {z.toFixed(1)}
+    </span>
+  );
+}
+
 const ROW_HEIGHT = 40;
+
+/** Skew cell color, inverse-aware: an inverse product's call-skew bid reads bearish for underlying exposure. */
+function skewColor(rrSkew25: number | null, inverse: boolean): string {
+  if (rrSkew25 == null) return 'text-slate-600';
+  const bullish = inverse ? rrSkew25 < 0 : rrSkew25 > 0;
+  const bearish = inverse ? rrSkew25 > 4 : rrSkew25 < -4;
+  return bullish ? 'text-bullish' : bearish ? 'text-bearish' : 'text-slate-400';
+}
 
 function Row({ row, pinned, flash }: { row: TickerFlow; pinned: boolean; flash: 'bullish' | 'bearish' | null }): JSX.Element {
   const togglePin = useFlowStore((s) => s.togglePin);
@@ -57,6 +91,29 @@ function Row({ row, pinned, flash }: { row: TickerFlow; pinned: boolean; flash: 
         <a href={`/ticker/${row.symbol}`} className="font-semibold text-slate-100 hover:text-blue-400">
           {row.symbol}
         </a>
+        {row.sectorRelative?.regimeDetach && (
+          <span
+            className="text-[9px] text-caution"
+            title={`Regime shift: ${row.sectorRelative.regimeDetachMetric} relative spread ${row.sectorRelative.regimeDetachDir} vs sector`}
+          >
+            ◆
+          </span>
+        )}
+        {row.sectorRelative?.divergence === 'distribution' && (
+          <span className="text-[10px] text-bearish" title="Distribution: price up while skew-z deteriorating (heuristic screen, not a significance test — see ticker page for HAC t)">
+            ▽
+          </span>
+        )}
+        {row.sectorRelative?.divergence === 'accumulation' && (
+          <span className="text-[10px] text-bullish" title="Accumulation: price down/flat while skew-z improving (heuristic screen, not a significance test — see ticker page for HAC t)">
+            △
+          </span>
+        )}
+        {row.inverse && (
+          <span className="text-[8px] font-semibold text-caution" title={`Inverse${row.leverage !== 1 ? ` ${row.leverage}×` : ''} — skew read in underlying-exposure terms`}>
+            INV
+          </span>
+        )}
       </div>
       <span className={cn('w-14 text-right tnum font-semibold', row.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
         {formatRatio(row.putCallRatio)}
@@ -83,10 +140,8 @@ function Row({ row, pinned, flash }: { row: TickerFlow; pinned: boolean; flash: 
         {row.ivRank !== null ? row.ivRank : '—'}
       </span>
       <span
-        className={cn(
-          'w-14 text-right tnum',
-          row.analytics?.rrSkew25 == null ? 'text-slate-600' : row.analytics.rrSkew25 > 0 ? 'text-bullish' : row.analytics.rrSkew25 < -4 ? 'text-bearish' : 'text-slate-400',
-        )}
+        className={cn('w-14 text-right tnum', skewColor(row.analytics?.rrSkew25 ?? null, row.inverse))}
+        title={row.inverse ? 'Inverse product: skew colored in underlying-exposure terms (raw value shown)' : undefined}
       >
         {row.analytics?.rrSkew25 != null
           ? `${row.analytics.rrSkew25 > 0 ? '+' : ''}${row.analytics.rrSkew25.toFixed(1)}`
@@ -95,6 +150,8 @@ function Row({ row, pinned, flash }: { row: TickerFlow; pinned: boolean; flash: 
       <span className={cn('w-14 text-right tnum', (row.analytics?.oiPutCall ?? 1) > 1 ? 'text-bearish' : 'text-bullish')}>
         {row.analytics?.oiPutCall != null ? row.analytics.oiPutCall.toFixed(2) : '—'}
       </span>
+      <ZCell z={row.sectorRelative?.skewZ30 ?? null} window={30} />
+      <ZCell z={row.sectorRelative?.skewZ90 ?? null} window={90} />
       <span className="flex w-28 items-center gap-1.5">
         <SpikeBadge level={row.spikeLevel} />
         <span className="tnum text-slate-400" title={`Unusual activity score ${row.spikeScore}/100 · volume ${row.volumeVsExpected.toFixed(1)}× expected`}>
@@ -188,7 +245,7 @@ export function FlowTable({ isLoading }: { isLoading: boolean }): JSX.Element {
 
       {/* Header + body share one horizontal scroll context */}
       <div className="min-h-0 flex-1 overflow-x-auto">
-        <div className="flex min-w-[1180px] items-center gap-2 border-b border-surface-border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+        <div className="flex min-w-[1360px] items-center gap-2 border-b border-surface-border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
           {COLUMNS.map((col) => (
             <button
               key={col.label}
@@ -204,7 +261,7 @@ export function FlowTable({ isLoading }: { isLoading: boolean }): JSX.Element {
         </div>
 
         {/* Virtualized body */}
-        <div ref={scrollRef} className="h-[calc(100%-29px)] min-w-[1180px] overflow-y-auto">
+        <div ref={scrollRef} className="h-[calc(100%-29px)] min-w-[1360px] overflow-y-auto">
         {isLoading && rows.length === 0 ? (
           <div className="space-y-1 p-3">
             {Array.from({ length: 12 }, (_, i) => (

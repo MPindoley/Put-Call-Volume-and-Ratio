@@ -13,6 +13,7 @@ import type {
   ConnectionStatus,
   MarketContext,
   RatioPoint,
+  SectorDispersion,
   SectorRatio,
   TickerFlow,
 } from '@/types';
@@ -22,6 +23,7 @@ interface FlowResponse {
   aggregate: AggregateRatio | null;
   market: MarketContext | null;
   sectors: SectorRatio[];
+  dispersions: SectorDispersion[];
   ratioSeries: RatioPoint[];
   status: ConnectionStatus;
 }

@@ -1,14 +1,15 @@
 'use client';
 
-/** Right column: tabbed Alerts / Accuracy / Leaders. */
+/** Right column: tabbed Alerts / Accuracy / Regime / Leaders. */
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { useAlerts } from '@/hooks/useAlerts';
 import { AccuracyPanel } from './AccuracyPanel';
 import { AlertFeed } from './AlertFeed';
 import { LeadersPanel } from './LeadersPanel';
+import { RegimePanel } from './RegimePanel';
 
-type Tab = 'alerts' | 'accuracy' | 'leaders';
+type Tab = 'alerts' | 'accuracy' | 'regime' | 'leaders';
 
 export function RightPanel(): JSX.Element {
   const [tab, setTab] = useState<Tab>('alerts');
@@ -17,6 +18,7 @@ export function RightPanel(): JSX.Element {
   const tabs: { id: Tab; label: string }[] = [
     { id: 'alerts', label: `Alerts${alerts.length > 0 ? ` (${alerts.length})` : ''}` },
     { id: 'accuracy', label: 'Accuracy' },
+    { id: 'regime', label: 'Regime' },
     { id: 'leaders', label: 'Leaders' },
   ];
 
@@ -41,6 +43,7 @@ export function RightPanel(): JSX.Element {
       <div className="min-h-0 flex-1 overflow-auto">
         {tab === 'alerts' && <AlertFeed embedded />}
         {tab === 'accuracy' && <AccuracyPanel />}
+        {tab === 'regime' && <RegimePanel />}
         {tab === 'leaders' && <LeadersPanel />}
       </div>
     </div>

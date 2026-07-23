@@ -25,6 +25,7 @@ export function RatioPanel(): JSX.Element {
   const sectors = useFlowStore((s) => s.sectors);
   const rows = useFlowStore((s) => s.rows);
   const market = useFlowStore((s) => s.market);
+  const dispersions = useFlowStore((s) => s.dispersions);
 
   const heatmap = useMemo(
     () =>
@@ -121,6 +122,41 @@ export function RatioPanel(): JSX.Element {
                 </span>
               )}
             </div>
+
+            {/* IV dispersion proxy per sector (benchmark IV ÷ weighted constituent IV) */}
+            {dispersions.length > 0 && (
+              <div className="mt-3">
+                <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">
+                  IV dispersion proxy{' '}
+                  <span
+                    className="text-slate-600"
+                    title="Sector-ETF IV ÷ weighted-average constituent IV. Rising/high = macro/systemic regime (names move together); falling/low = dispersion (stock-picking). A proxy, not true implied correlation."
+                  >
+                    (vs 90-day pctile)
+                  </span>
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {dispersions.filter((d) => d.proxy !== null).map((d) => (
+                    <a
+                      key={d.cohort}
+                      href="/sectors"
+                      className="rounded border border-surface-border px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-slate-500"
+                      title={`${d.label}: proxy ${d.proxy} · ${d.weightMethod}-weighted · ${d.constituentCount} names · IQR ${d.medianIqr ?? '—'} · ${d.sampleDays} days`}
+                    >
+                      {d.cohort}{' '}
+                      <span className="tnum font-semibold text-slate-100">{(d.proxy as number).toFixed(2)}</span>
+                      {d.pct90 !== null ? (
+                        <span className={cn('ml-1 tnum', d.pct90 >= 70 ? 'text-bearish' : d.pct90 <= 30 ? 'text-bullish' : 'text-slate-500')}>
+                          {d.pct90}%
+                        </span>
+                      ) : (
+                        <span className="ml-1 text-slate-600">{d.sampleDays}/20</span>
+                      )}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Sector ratios */}
             <div className="mt-3 flex flex-wrap gap-1.5">

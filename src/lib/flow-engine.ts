@@ -14,14 +14,20 @@ import type {
   AppSettings,
   ConnectionStatus,
   DataSourceMode,
+  IdiosyncraticMove,
   MarketContext,
   RatioPoint,
+  SectorDispersion,
   SectorRatio,
+  SectorRelative,
+  SideFlow,
   SpikeAlert,
   TickerFlow,
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
 import { computeChainAnalytics } from './chain-analytics';
+import { buildEventGauge, type EventGaugeInput } from './event-analytics';
+import { classifyOiFlow, defaultInstrument, sideIvChanges, type InstrumentConfig } from './interpretation';
 import { apiStats } from './data-source';
 import type { OptionsChainAggregate } from './provider';
 import { aggregateRatio, percentileRank, putCallRatio, sectorRatios } from './ratio-calculator';
@@ -59,6 +65,10 @@ export interface VolContext {
   hv20: number | null;
   /** Yesterday's total OI, for day-over-day OI change. */
   prevTotalOI: number | null;
+  /** Yesterday's per-side OI and skew, for the IV-direction OI tiebreaker. */
+  prevPutOI: number | null;
+  prevCallOI: number | null;
+  prevRrSkew: number | null;
 }
 
 export class FlowEngine {
@@ -72,6 +82,16 @@ export class FlowEngine {
 
   readonly detector = new SpikeDetector();
   readonly volContext = new Map<string, VolContext>();
+  /** Per-ticker sector-relative z-scores, refreshed at the EOD capture. */
+  readonly sectorRelatives = new Map<string, SectorRelative>();
+  /** Per-sector IV-dispersion proxy, refreshed at the EOD capture. */
+  readonly sectorDispersion = new Map<string, SectorDispersion>();
+  /** Per-ticker inverse/leverage config for the interpretation layer. */
+  readonly instruments = new Map<string, InstrumentConfig>();
+  /** Per-ticker event-gauge inputs (active catalyst + realized distribution), refreshed periodically. */
+  readonly eventInputs = new Map<string, EventGaugeInput>();
+  /** Per-ticker recent idiosyncratic moves (unscheduled single-name), refreshed periodically. */
+  readonly idiosyncraticMoves = new Map<string, IdiosyncraticMove[]>();
   marketContext: MarketContext | null = null;
   settings: AppSettings = { ...DEFAULT_SETTINGS };
   mode: DataSourceMode = 'simulated';
@@ -153,6 +173,18 @@ export class FlowEngine {
         ? Number((((totalOI - ctx.prevTotalOI) / ctx.prevTotalOI) * 100).toFixed(2))
         : null;
 
+    // IV-direction OI tiebreaker, per side. Needs yesterday's per-side OI/skew.
+    const instrument = this.instruments.get(agg.symbol) ?? defaultInstrument(agg.symbol);
+    const oiSignals = this.computeOiSignals(analytics, ctx, agg.iv30Change);
+
+    // Event gauge: recompute the live implied move from the chain against the
+    // active catalyst, folded into the stored realized distribution.
+    const eventInput = this.eventInputs.get(agg.symbol);
+    const eventGauge =
+      eventInput && agg.contracts && agg.contracts.length > 0
+        ? buildEventGauge(eventInput, agg.contracts, agg.underlyingPrice, new Date(now))
+        : null;
+
     const netFlow = callVolume - putVolume;
     st.flow = {
       symbol: agg.symbol,
@@ -177,6 +209,12 @@ export class FlowEngine {
       hv20: ctx?.hv20 ?? analytics?.hv20 ?? null,
       oiChangePct,
       analytics,
+      inverse: instrument.inverse,
+      leverage: instrument.leverage,
+      oiSignals,
+      sectorRelative: this.sectorRelatives.get(agg.symbol) ?? null,
+      eventGauge,
+      idiosyncraticMoves: this.idiosyncraticMoves.get(agg.symbol) ?? [],
       lastUpdated: now,
       lastDelta: netFlow > 0 ? 'bullish' : netFlow < 0 ? 'bearish' : 'none',
     };
@@ -251,6 +289,10 @@ export class FlowEngine {
     return this.sectors;
   }
 
+  getSectorDispersions(): SectorDispersion[] {
+    return [...this.sectorDispersion.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }
+
   getRatioSeries(): RatioPoint[] {
     return this.ratioSeries;
   }
@@ -276,6 +318,25 @@ export class FlowEngine {
       rateLimitPerMinute: api.perMinute,
       dbConnected: this.dbConnected,
       marketOpen: isMarketHours(),
+    };
+  }
+
+  /** Per-side OI×IV tiebreaker from live analytics vs yesterday's per-side OI/skew. */
+  private computeOiSignals(
+    analytics: { putOI: number; callOI: number; rrSkew25: number | null } | null,
+    ctx: VolContext | undefined,
+    iv30Change: number | null,
+  ): { call: SideFlow; put: SideFlow; iv30Change: number | null; skewChange: number | null } | null {
+    if (!analytics || !ctx || ctx.prevPutOI === null || ctx.prevCallOI === null) return null;
+    const callOiPct = ctx.prevCallOI > 0 ? ((analytics.callOI - ctx.prevCallOI) / ctx.prevCallOI) * 100 : null;
+    const putOiPct = ctx.prevPutOI > 0 ? ((analytics.putOI - ctx.prevPutOI) / ctx.prevPutOI) * 100 : null;
+    const skewChange = analytics.rrSkew25 !== null && ctx.prevRrSkew !== null ? analytics.rrSkew25 - ctx.prevRrSkew : null;
+    const iv = sideIvChanges(iv30Change, skewChange);
+    return {
+      call: { oiChangePct: round2(callOiPct), ivChange: round2(iv.call), signal: classifyOiFlow(callOiPct, iv.call) },
+      put: { oiChangePct: round2(putOiPct), ivChange: round2(iv.put), signal: classifyOiFlow(putOiPct, iv.put) },
+      iv30Change: round2(iv30Change),
+      skewChange: round2(skewChange),
     };
   }
 
@@ -313,11 +374,21 @@ export class FlowEngine {
         hv20: null,
         oiChangePct: null,
         analytics: null,
+        inverse: defaultInstrument(symbol).inverse,
+        leverage: defaultInstrument(symbol).leverage,
+        oiSignals: null,
+        sectorRelative: null,
+        eventGauge: null,
+        idiosyncraticMoves: [],
         lastUpdated: 0,
         lastDelta: 'none',
       },
     };
   }
+}
+
+function round2(v: number | null): number | null {
+  return v === null || !Number.isFinite(v) ? null : Number(v.toFixed(2));
 }
 
 const globalStore = globalThis as unknown as { __flowEngine?: FlowEngine };

@@ -13,6 +13,9 @@
     "worker": "tsx workers/data-poller.ts",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "seed:purge": "tsx scripts/purge-seed.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
@@ -42,5 +45,8 @@
     "tsx": "^4.19.1",
     "typescript": "^5.6.3",
     "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.9"
   }
 }

@@ -27,18 +27,410 @@ model Ticker {
 
 /// One row per ticker per trading day: the vol/OI history behind IV rank,
 /// IV-vs-HV and day-over-day OI change. Matures toward a 52-week window.
+///
+/// `final`/`capturedEt` mark the pinned post-close snapshot; only finalized
+/// rows feed cross-sectional medians and rolling windows. `historicalCloseOnly`
+/// marks rows backfilled from 20-year price history (close present, IV/skew/OI
+/// null) so nothing downstream treats them as full metric rows.
 model DailyMetric {
-  id      BigInt   @id @default(autoincrement())
-  symbol  String
-  date    DateTime
-  iv30    Float?
-  hv20    Float?
-  close   Float?
-  putOI   Float?
-  callOI  Float?
-  rrSkew  Float?
+  id                  BigInt    @id @default(autoincrement())
+  symbol              String
+  date                DateTime
+  iv30                Float?
+  hv20                Float?
+  close               Float?
+  putOI               Float?
+  callOI              Float?
+  rrSkew              Float?
+  /// Session option volume (puts + calls) — a liquidity floor for median membership.
+  optVolume           Float?
+  /// OLS slope of the trailing 20 daily closes (price-derived, backfillable).
+  priceTrend20        Float?
+  /// Dealer gamma exposure ($/1% move) captured this session — for per-ticker gamma
+  /// regime resolution (Phase 4). Null on backfilled/close-only rows (no historical OI/IV).
+  gex                 Float?
+  /// ATM term-structure components captured this session (vol pts): near (~30d)
+  /// and far (~90d) ATM IV, plus the slope (far − near). Persisting the COMPONENTS,
+  /// not just the slope, lets a backwardation episode's resolution be classified by
+  /// curve shape (front_collapse vs back_lift). Null on close-only rows.
+  atmIvNear           Float?
+  atmIvFar            Float?
+  termSlope           Float?
+  /// Sample days behind the spike-volume baseline in effect this session (0/null =
+  /// detector unarmed) — persists spike-signal eligibility point-in-time.
+  spikeBaselineDays   Int?
+  /// ET timestamp of the pinned end-of-day capture; null while provisional.
+  capturedEt          DateTime?
+  final               Boolean   @default(false)
+  historicalCloseOnly Boolean   @default(false)
+  /// Synthetic test row (never written by prod capture; excluded from all stats).
+  seeded              Boolean   @default(false)
 
   ticker Ticker @relation(fields: [symbol], references: [symbol])
+
+  @@unique([symbol, date])
+  @@index([symbol, date])
+  @@index([date, final])
+}
+
+/// Sector → benchmark ETF mapping (editable config; overrides code defaults).
+model SectorBenchmark {
+  sector      String @id
+  benchmarkEtf String
+}
+
+/// Optional per-ticker market cap for the IV-dispersion-proxy weighting
+/// cascade (cap → OI → equal). Empty by default; populate to upgrade weighting.
+model MarketCapConfig {
+  symbol    String   @id
+  marketCap Float
+  updatedAt DateTime @updatedAt
+}
+
+/// Cohort-level cross-sectional aggregates, one finalized row per cohort/day.
+/// A cohort is keyed by its benchmark ETF (a name belongs to exactly one:
+/// its per-ticker override, else its GICS sector SPDR — mutually exclusive).
+///
+/// `dispersionWeightMethod` stamps how the IV-dispersion proxy was weighted so
+/// a window/percentile never mixes methods (method change recomputes the series).
+/// `compositionVersion` stamps the cohort's membership definition; rolling
+/// windows/percentiles filter to the current version so none spans two
+/// definitions (a composition change resets accumulation for that cohort).
+model CohortDaily {
+  id                     BigInt   @id @default(autoincrement())
+  cohort                 String
+  cohortLabel            String
+  date                   DateTime
+  final                  Boolean  @default(false)
+  constituentCount       Int
+  /// Interquartile range of the cohort's member IV30 — median-health signal.
+  medianIqr              Float?
+  benchmarkIv30          Float?
+  benchmarkSkew          Float?
+  benchmarkOiPc          Float?
+  benchmarkIvHv          Float?
+  medianIv30             Float?
+  medianSkew             Float?
+  medianOiPc             Float?
+  medianIvHv             Float?
+  /// IV-dispersion proxy = benchmark IV30 / weighted-mean member IV30.
+  dispersionProxy        Float?
+  dispersionWeightMethod String? // 'cap' | 'oi' | 'equal'
+  compositionVersion     String
+  seeded                 Boolean  @default(false)
+
+  @@unique([cohort, date])
+  @@index([cohort, date])
+  @@index([cohort, compositionVersion])
+}
+
+/// Per-ticker relative spreads (ticker − sector median) and their rolling
+/// z-scores, plus the regime-detachment flag. One finalized row per ticker/day.
+model RelativeMetric {
+  id                BigInt   @id @default(autoincrement())
+  symbol            String
+  date              DateTime
+  final             Boolean  @default(false)
+  /// The cohort this spread was measured against, and its composition version.
+  cohort            String   @default("")
+  compositionVersion String  @default("")
+  ivRelSpread       Float?
+  skewRelSpread     Float?
+  oiPcRelSpread     Float?
+  ivHvRelSpread     Float?
+  skewZ30           Float?
+  skewZ90           Float?
+  ivZ30             Float?
+  ivZ90             Float?
+  oiPcZ30           Float?
+  oiPcZ90           Float?
+  ivHvZ30           Float?
+  ivHvZ90           Float?
+  /// Finalized rows available in the 90-day window, for "accumulating N/90".
+  windowDays        Int      @default(0)
+  regimeDetach      Boolean  @default(false)
+  regimeDetachMetric String?
+  regimeDetachDir   String? // 'widening' | 'narrowing'
+  /// Phase 2 divergence: 20-day price-trend sign vs 20-day skew-z-trend sign.
+  divergenceType    String? // 'distribution' | 'accumulation'
+  priceTrendSlope   Float?
+  priceTrendT       Float?
+  skewTrendSlope    Float?
+  skewTrendT        Float?
+  /// Newey-West HAC-adjusted t-stats (autocorrelation-robust; audit only, not the screen).
+  priceTrendTNW     Float?
+  skewTrendTNW      Float?
+  /// Finalized skew-z points available for the divergence trend (for warm-up UI).
+  divergenceWindow  Int      @default(0)
+  seeded            Boolean  @default(false)
+
+  @@unique([symbol, date])
+  @@index([symbol, date])
+}
+
+/// Single-row analytics configuration (thresholds). Mirrors DEFAULT_ANALYTICS_CONFIG.
+model AnalyticsConfig {
+  id                       Int   @id @default(1)
+  minConstituents          Int   @default(5)
+  regimeDetachSigma        Float @default(1.0)
+  z30Window                Int   @default(30)
+  z90Window                Int   @default(90)
+  earningsWindowBeforeDays Int   @default(7)
+  earningsWindowAfterDays  Int   @default(1)
+  captureDelayMin          Int   @default(20)
+  captureWindowMin         Int   @default(30)
+  zMinObs30                Int   @default(20)
+  zMinObs90                Int   @default(60)
+  zStdevFloor              Float @default(0.1)
+  medianMinOI              Float @default(0)
+  medianMinVolume          Float @default(0)
+  medianIqrMult            Float @default(2.5)
+  divergenceWindow         Int   @default(20)
+  divergenceTStat          Float @default(1.5)
+  /// Rich/cheap gauge: min CONFIRMED events (manual + forward-confirmed, with known
+  /// realized moves) before the gauge shows a number. Below it: "insufficient history".
+  minConfirmedEvents       Int   @default(8)
+  /// Event expiry-pair liquidity floor: min ATM OI and max ATM quote-width fraction.
+  eventMinOI               Float @default(100)
+  eventMaxQuoteWidth       Float @default(0.25)
+  /// Idiosyncratic-move detection (residual-based, vs SPY): residual-z threshold,
+  /// min raw move, and rolling benchmark-regression window (sessions).
+  inferMoveZ               Float @default(3.5)
+  inferMinMovePct          Float @default(0.02)
+  inferBetaWindow          Int   @default(60)
+  /// Market-wide-day filter: a session is "sharp" for a ticker at this many robust
+  /// sigmas; a date is market-wide (excluded) when this share of the universe is sharp.
+  breadthMoveZ             Float @default(3.0)
+  breadthShare             Float @default(0.5)
+  /// SEC EDGAR earnings confirmation: priority ticker list to backfill, minimum
+  /// spacing (days) before a second Item-2.02 counts as a new quarter, and cache TTL.
+  edgarTickers             String[] @default([])
+  edgarMinSpacingDays      Int      @default(45)
+  edgarCacheTtlHours       Int      @default(168)
+  /// Regime classification (Phase 4.1): per-dimension deadbands and the persistence
+  /// (consecutive days beyond the band) required before a regime state flips.
+  regimeVolDeadband        Float @default(0.5)  // VIX3M−VIX vol points
+  regimeTrendDeadbandPct   Float @default(0.005) // fraction of the 50-day MA
+  regimeGammaDeadbandFrac  Float @default(0.1)  // fraction of the trailing |aggGex| scale
+  regimePersistDays        Int   @default(2)
+  /// Signal-grid thresholds (hashed into thresholdVersion; changing them starts a
+  /// new version — logged signals are never rescored under new cutoffs).
+  /// pcHigh/pcLow apply to the OI-based put/call ratio; a future volume-based P/C
+  /// signal is a NEW signal type, not a reuse of these.
+  skewZExtreme             Float @default(2.0)
+  pcHigh                   Float @default(1.3)
+  pcLow                    Float @default(0.7)
+  /// Conditional-matrix display: minimum cell sample, and the minimum ticker-days
+  /// in-regime before the ticker's own base rate is used (else cohort fallback).
+  minCellSample            Int   @default(20)
+  baseRateMinTickerDays    Int   @default(60)
+}
+
+/// One earnings/catalyst event per ticker per date. Sources:
+///   'manual'  — operator-entered ground truth (always confirmed);
+///   'edgar'   — SEC 8-K Item 2.02 filing, ground truth; report timing derived
+///               from the filing's acceptance timestamp (see `acceptedAt`);
+///   'forward' — a term-structure IV bulge identifies the expiry, the operator
+///               confirms the date (`confirmed`), and the realized reaction is
+///               recorded going forward (an EDGAR filing near the date auto-confirms it).
+/// Price-history inference does NOT produce earnings events (it lives in the
+/// separate IdiosyncraticEvent feed) and EDGAR/manual never mix with it. Only
+/// confirmed events feed the rich/cheap gauge.
+///
+/// The realized-move fields are filled once the catalyst passes; `reportTiming`
+/// picks which session the realized move is measured on (bmo/intraday → prior→event
+/// close, amc → event→next close). When timing is unknown the realized move is
+/// stored but `realizedTimingUncertain` is set and it is EXCLUDED from the statistic.
+model EarningsEvent {
+  id                      BigInt    @id @default(autoincrement())
+  symbol                  String
+  /// ET date the catalyst is realized (the report date).
+  date                    DateTime
+  source                  String // 'manual' | 'edgar' | 'forward'
+  /// True for ground truth (manual/edgar); for forward events, set when confirmed.
+  confirmed               Boolean   @default(false)
+  /// Off-cadence EDGAR filing (prelim/guidance) held back for operator review.
+  pendingReview           Boolean   @default(false)
+  /// 'bmo' | 'amc' | 'intraday' | 'unknown'.
+  reportTiming            String    @default("unknown")
+  /// Raw SEC filing acceptance timestamp (UTC) — the audit trail behind reportTiming.
+  acceptedAt              DateTime?
+  /// Realized |return| over the matched session, as a fraction; null until known.
+  realizedMovePct         Float?
+  /// Set when report timing was unknown → excluded from the rich/cheap distribution.
+  realizedTimingUncertain Boolean   @default(false)
+  seeded                  Boolean   @default(false)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@unique([symbol, date])
+  @@index([symbol, date])
+}
+
+/// Daily market regime triple (Phase 4.1), one immutable finalized row per trading
+/// day. Three BINARY dimensions (deadband + persistence hold the prior state through
+/// in-band noise; 'neutral' only at series init). Raw inputs are stored alongside the
+/// classified state so proximity to a boundary is auditable.
+///
+/// `gammaState` is NULL for dates before live capture began — aggregate dealer gamma
+/// cannot be reconstructed from history (no historical OI/IV) and is never fabricated;
+/// vol and trend ARE reconstructable from stored VIX/SPY closes. `regimeConfigVersion`
+/// stamps the deadband/persistence knobs so a scoring window never spans two
+/// definitions. Once `final`, a row is never recomputed (point-in-time integrity).
+model DailyRegime {
+  id                 BigInt   @id @default(autoincrement())
+  date               DateTime @unique
+  /// Classified binary states: 'pos' | 'neg' | 'neutral' (see VOL/TREND/GAMMA labels).
+  volState           String
+  trendState         String
+  gammaState         String? // null when gamma is unavailable (pre-capture history)
+  /// Signed pending-flip streak per dimension, carried forward for incremental classification.
+  volStreak          Int      @default(0)
+  trendStreak        Int      @default(0)
+  gammaStreak        Int?
+  /// Raw inputs behind the classification.
+  vixSpread          Float?
+  spxClose           Float?
+  spx50ma            Float?
+  /// Aggregate dealer gamma stored two ways: net summed GEX (classified on its sign)
+  /// and breadth = share of tracked tickers with positive GEX. Universe-scoped, not the market.
+  aggGex             Float?
+  gexBreadth         Float?
+  regimeConfigVersion String
+  final              Boolean  @default(false)
+  seeded             Boolean  @default(false)
+
+  @@index([date])
+  @@index([regimeConfigVersion])
+}
+
+/// One immutable row per (ticker, signal type, finalized session) — the Phase 4
+/// signal log. Emitted ONLY from finalized, non-seeded daily rows at EOD, never
+/// from provisional data, and never recomputed with later baselines: the row IS
+/// the point-in-time record. The signal grid is FIXED (see signals.ts); a future
+/// signal type is a new type reported separately, never folded into this matrix.
+///
+/// `direction` is 'bullish'/'bearish' for the directional matrix; the event-badge
+/// track uses 'rich'/'cheap' (predicting realized under/over implied); magnitude-
+/// track signals (backwardation, regime_detach) leave it null. `magnitude` stores
+/// the continuous underlying value (actual z, actual P/C, percentile, term slope)
+/// — re-thresholding it after seeing outcomes is overfitting; exploratory only.
+/// Version stamps (composition, weight method, regime config, thresholds) ensure
+/// no scoring window spans two definitions. Forward returns are filled once 20
+/// trading days elapse: raw and excess vs SPY and vs the sector benchmark.
+model SignalLog {
+  id                  BigInt    @id @default(autoincrement())
+  symbol              String
+  /// ET date of the finalized session the signal fired on.
+  firedOn             DateTime
+  signalType          String // divergence | skew_z | pc_extreme | spike_alert | event_badge | backwardation | regime_detach
+  direction           String? // 'bullish' | 'bearish' | 'rich' | 'cheap' | 'fair' | null (magnitude track)
+  /// ETF/index flow is structurally hedging, not a directional bet: ETF signals are
+  /// logged for reference but routed OUT of the directional matrix into their own panel.
+  isEtf               Boolean   @default(false)
+  magnitude           Float?
+  /// Small structured annotation (e.g. regime-detach "iv:widening").
+  detail              String?
+  /// Regime triple at fire time; gammaState null → a 2-D (pre-capture) signal.
+  regimeVol           String?
+  regimeTrend         String?
+  regimeGamma         String?
+  /// Point-in-time stamps.
+  compositionVersion  String    @default("")
+  weightMethod        String?
+  regimeConfigVersion String    @default("")
+  thresholdVersion    String
+  /// Event-badge track: implied move at fire, linked event, realized (filled at scoring).
+  impliedMove         Float?
+  eventDate           DateTime?
+  realizedMove        Float?
+  /// Backwardation: linked episode (resolution joined when the episode closes).
+  episodeId           BigInt?
+  /// Forward log returns (fractions), filled once 20 trading days have elapsed.
+  fwd5Raw             Float?
+  fwd10Raw            Float?
+  fwd20Raw            Float?
+  fwd5ExSpy           Float?
+  fwd10ExSpy          Float?
+  fwd20ExSpy          Float?
+  fwd5ExSector        Float?
+  fwd10ExSector       Float?
+  fwd20ExSector       Float?
+  scored              Boolean   @default(false)
+  seeded              Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+
+  @@unique([symbol, signalType, firedOn])
+  @@index([signalType, firedOn])
+  @@index([scored, firedOn])
+}
+
+/// A contiguous backwardation episode per ticker (termSlope below the threshold),
+/// opened/extended/closed forward-only from persisted daily termSlope. On close,
+/// the PRIMARY resolution is the curve shape — 'front_collapse' (near-end IV fell
+/// to meet the back: the fear passed) vs 'back_lift' (far-end rose to meet the
+/// front: the fear repriced as durable) — derived from the persisted term-structure
+/// components; the outcome class (realized_move / iv_crush / faded) is a secondary
+/// label. Both are joined back to the episode's logged signal.
+model BackwardationEpisode {
+  id           BigInt    @id @default(autoincrement())
+  symbol       String
+  startDate    DateTime
+  endDate      DateTime?
+  entrySlope   Float
+  exitSlope    Float?
+  minSlope     Float
+  entryIv30    Float?
+  exitIv30     Float?
+  /// Term-structure components at entry/exit (null → resolved via the iv30+slope proxy).
+  entryIvNear  Float?
+  entryIvFar   Float?
+  exitIvNear   Float?
+  exitIvFar    Float?
+  /// Signed cumulative log return over the episode (start close → end close).
+  cumReturn    Float?
+  /// PRIMARY: 'front_collapse' | 'back_lift' | 'unknown'; null while open.
+  resolution   String?
+  /// How the curve resolution was derived: 'components' (persisted atmIvNear/Far at
+  /// BOTH ends) or 'proxy' (any end fell back to iv30+slope — episodes opened before
+  /// components were captured). Stamped so the two never silently mix in resolution
+  /// stats — the same versioning discipline as composition/threshold/regime stamps.
+  resolutionMethod String?
+  /// Secondary outcome class: 'realized_move' | 'iv_crush' | 'faded'.
+  outcome      String?
+  seeded       Boolean   @default(false)
+
+  @@unique([symbol, startDate])
+  @@index([symbol, endDate])
+}
+
+/// Cache of SEC EDGAR fetches (company_tickers map + per-CIK submissions) so a
+/// priority-list backfill never re-hits the endpoint. Keyed by fetch identity;
+/// `fetchedAt` drives the TTL refresh.
+model EdgarCache {
+  key       String   @id
+  json      String
+  fetchedAt DateTime @default(now())
+}
+
+/// A large UNSCHEDULED single-name move (idiosyncratic-event feed). Detected on
+/// the benchmark-adjusted residual (vs SPY) — its own feature, deliberately NOT an
+/// earnings source. Purely informational: a per-ticker history of outsized moves
+/// not explained by the broad market.
+model IdiosyncraticEvent {
+  id          BigInt   @id @default(autoincrement())
+  symbol      String
+  date        DateTime
+  /// Total single-session |return|, as a fraction.
+  movePct     Float
+  /// Signed residual (benchmark-adjusted) return.
+  residualPct Float
+  /// Residual magnitude in robust sigmas — the detection statistic.
+  residualZ   Float
+  /// Benchmark used for the residual (SPY).
+  benchmark   String   @default("SPY")
+  seeded      Boolean  @default(false)
+  createdAt   DateTime @default(now())
 
   @@unique([symbol, date])
   @@index([symbol, date])
@@ -128,6 +520,12 @@ model TickerOverride {
   minPremium   Float?
   minContracts Int?
   muted        Boolean @default(false)
+  /// Industry-benchmark override, e.g. NVDA → SMH instead of XLK.
+  benchmarkEtf String?
+  /// Inverse product: interpretation flips to underlying-exposure terms (raw data untouched).
+  inverse      Boolean @default(false)
+  /// Leverage factor (SQQQ = 3, TQQQ = 3, SOXL = 3); 1 for ordinary products.
+  leverage     Float   @default(1)
 
   ticker Ticker @relation(fields: [symbol], references: [symbol])
 }

@@ -146,6 +146,8 @@ export class CboeClient implements OptionsDataProvider {
           openInterest: c.open_interest ?? 0,
           volume,
           mid,
+          bid: bid > 0 ? bid : undefined,
+          ask: ask > 0 ? ask : undefined,
         };
         agg.contracts?.push(contract);
       }
@@ -170,14 +172,24 @@ export class CboeClient implements OptionsDataProvider {
 
   /** Daily closes (ascending) for realized-vol calculations. */
   async getDailyCloses(symbol: string, days = 80, priority = 8): Promise<number[]> {
+    return (await this.getDailyClosesDated(symbol, days, priority)).map((d) => d.close);
+  }
+
+  /** Dated daily closes (ascending), for historical backfill keyed by date. */
+  async getDailyClosesDated(
+    symbol: string,
+    days = 120,
+    priority = 8,
+  ): Promise<{ date: Date; close: number }[]> {
     const data = await this.get<CboeHistoryResponse>(
-      `${BASE.replace('/delayed_quotes', '')}/delayed_quotes/charts/historical/${encodeURIComponent(symbol)}.json`,
+      `${BASE}/charts/historical/${encodeURIComponent(symbol)}.json`,
       priority,
       `cboe-hist/${symbol}`,
     );
     return (data.data ?? [])
-      .map((d) => d.close ?? 0)
-      .filter((c) => c > 0)
+      .filter((d) => d.date && (d.close ?? 0) > 0)
+      .map((d) => ({ date: new Date(`${d.date}T00:00:00Z`), close: d.close as number }))
+      .filter((d) => !Number.isNaN(d.date.getTime()))
       .slice(-days);
   }
 }

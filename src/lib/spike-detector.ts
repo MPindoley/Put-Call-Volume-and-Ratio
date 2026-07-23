@@ -89,6 +89,12 @@ export class SpikeDetector {
     return this.baselines.has(symbol);
   }
 
+  /** Sample days behind a symbol's baseline (0 = unarmed). Persisted daily so the
+   *  spike signal's could-have-fired denominator is reconstructible point-in-time. */
+  baselineSampleDays(symbol: string): number {
+    return this.baselines.get(symbol)?.sampleDays ?? 0;
+  }
+
   /** Expected cumulative session volume for `symbol` right now. */
   expectedVolume(symbol: string, now = new Date()): number {
     const baseline = this.baselines.get(symbol);

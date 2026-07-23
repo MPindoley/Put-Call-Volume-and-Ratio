@@ -12,8 +12,18 @@ import cron from 'node-cron';
 import type { Server } from 'socket.io';
 import { CboeClient } from './cboe';
 import { getDataProvider } from './data-source';
+import { refreshEdgarConfirmations } from './event-jobs';
 import { getFlowEngine, type FlowEngine } from './flow-engine';
-import { persistAlert, runMaintenance, seedTickers } from './history-jobs';
+import {
+  backfillCloseHistory,
+  maybeCaptureEndOfDay,
+  persistAlert,
+  runMaintenance,
+  seedTickers,
+} from './history-jobs';
+import { loadInstrumentConfigs } from './interpretation';
+import { backfillRegimeHistory } from './regime-jobs';
+import { loadLatestIntoEngine } from './sector-analytics';
 import { FlowSimulator } from './simulator';
 import { TRACKED_UNIVERSE } from './universe';
 import { tryDb, dbAvailable } from './db';
@@ -30,6 +40,8 @@ export class Poller {
   private running = false;
   private task: cron.ScheduledTask | null = null;
   private maintenanceTask: cron.ScheduledTask | null = null;
+  private eodTask: cron.ScheduledTask | null = null;
+  private edgarTask: cron.ScheduledTask | null = null;
 
   constructor(private io: IO | null) {
     this.engine = getFlowEngine();
@@ -48,16 +60,28 @@ export class Poller {
     // Every fired alert is persisted for the accuracy scoreboard.
     this.engine.onAlert((alert) => void persistAlert(alert));
 
-    void this.loadStoredState().then(() => runMaintenance(this.engine));
+    void this.loadStoredState().then(async () => {
+      await backfillCloseHistory(this.engine);
+      await backfillRegimeHistory(); // seed vol+trend regime history (gamma null) once
+      await runMaintenance(this.engine);
+    });
     void this.cycle(); // immediate first cycle
     this.task = cron.schedule(`*/${intervalSec} * * * * *`, () => void this.cycle());
-    // Baselines, alert scoring and retention: every 2 hours.
+    // Baselines, alert scoring, provisional metrics and retention: every 2 hours.
     this.maintenanceTask = cron.schedule('11 */2 * * *', () => void runMaintenance(this.engine));
+    // Pinned end-of-day capture: checked every 5 min; fires once in the
+    // post-close ET window (self-gated on the trading calendar).
+    this.eodTask = cron.schedule('*/5 * * * *', () => void maybeCaptureEndOfDay(this.engine));
+    // SEC EDGAR earnings confirmation for the configured priority list: once daily
+    // (cached + throttled; no-ops when no tickers are configured).
+    this.edgarTask = cron.schedule('23 5 * * *', () => void refreshEdgarConfirmations());
   }
 
   stop(): void {
     this.task?.stop();
     this.maintenanceTask?.stop();
+    this.eodTask?.stop();
+    this.edgarTask?.stop();
   }
 
   private async loadStoredState(): Promise<void> {
@@ -103,6 +127,13 @@ export class Poller {
       });
       this.engine.historicalRatios = points.map((p) => p.ratio);
     });
+    // Load inverse/leverage instrument config for the interpretation layer.
+    const instruments = await loadInstrumentConfigs();
+    this.engine.instruments.clear();
+    for (const [symbol, cfg] of instruments) this.engine.instruments.set(symbol, cfg);
+
+    // Restore finalized sector-relative analytics so a restart keeps them.
+    await loadLatestIntoEngine(this.engine);
   }
 
   private async cycle(): Promise<void> {
@@ -117,7 +148,7 @@ export class Poller {
       const { aggregate, sectors, point } = this.engine.finalizeCycle();
       if (this.io && updated.length > 0) {
         this.io.emit('flow-update', updated);
-        this.io.emit('ratio-update', aggregate, sectors, point, this.engine.marketContext);
+        this.io.emit('ratio-update', aggregate, sectors, point, this.engine.marketContext, this.engine.getSectorDispersions());
       }
       this.io?.emit('connection-status', this.engine.status());
       await this.persistCycle(point.time * 1000, updated);

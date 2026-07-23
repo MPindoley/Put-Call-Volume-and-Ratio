@@ -11,6 +11,7 @@ export function GET(): NextResponse {
     aggregate: engine.getAggregate(),
     market: engine.marketContext,
     sectors: engine.getSectors(),
+    dispersions: engine.getSectorDispersions(),
     ratioSeries: engine.getRatioSeries(),
     status: engine.status(),
   });

@@ -52,7 +52,10 @@ export function Dashboard(): JSX.Element {
         <h1 className="text-sm font-bold tracking-tight text-slate-100">
           OPTIONS FLOW <span className="font-normal text-slate-500">· S&amp;P 500 put/call analytics</span>
         </h1>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-2">
+          <a href="/sectors" className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-surface-overlay hover:text-slate-200">
+            Cohorts
+          </a>
           <NotificationBell />
           <SettingsPanel />
         </div>
