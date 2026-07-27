@@ -32,6 +32,7 @@ import { apiStats } from './data-source';
 import type { OptionsChainAggregate } from './provider';
 import { aggregateRatio, percentileRank, putCallRatio, sectorRatios } from './ratio-calculator';
 import { SpikeDetector } from './spike-detector';
+import { isTradingDayNow } from './trading-calendar';
 import { sectorOf } from './universe';
 import { isMarketHours } from './utils';
 
@@ -317,7 +318,9 @@ export class FlowEngine {
       apiCallsLastMinute: api.callsLastMinute,
       rateLimitPerMinute: api.perMinute,
       dbConnected: this.dbConnected,
-      marketOpen: isMarketHours(),
+      // Holidays count as closed, matching the poller's idle gate — otherwise
+      // the status bar and the health probe disagree on a market holiday.
+      marketOpen: isMarketHours() && isTradingDayNow(),
     };
   }
 
