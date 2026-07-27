@@ -25,7 +25,9 @@ import { loadInstrumentConfigs } from './interpretation';
 import { backfillRegimeHistory } from './regime-jobs';
 import { loadLatestIntoEngine } from './sector-analytics';
 import { FlowSimulator } from './simulator';
+import { isTradingDayNow } from './trading-calendar';
 import { TRACKED_UNIVERSE } from './universe';
+import { isMarketHours } from './utils';
 import { tryDb, dbAvailable } from './db';
 import type { ServerToClientEvents, ClientToServerEvents, TickerFlow } from '@/types';
 
@@ -38,6 +40,7 @@ export class Poller {
   private simulator = new FlowSimulator();
   private lastFetched = new Map<string, number>();
   private running = false;
+  private marketWasOpen: boolean | null = null;
   private task: cron.ScheduledTask | null = null;
   private maintenanceTask: cron.ScheduledTask | null = null;
   private eodTask: cron.ScheduledTask | null = null;
@@ -136,8 +139,35 @@ export class Poller {
     await loadLatestIntoEngine(this.engine);
   }
 
+  /**
+   * Outside regular trading hours the delayed-quote feed is static, so polling
+   * it re-fetches identical chains — ~81% of a 24/7 loop's calls, since the
+   * session is 32.5 of every 168 hours. Idling between the close and the next
+   * open is the single largest saving on a metered host (and is the polite way
+   * to treat a free CDN). Maintenance, the end-of-day capture and the EDGAR
+   * job run on their own schedules and are unaffected.
+   *
+   * The simulator keeps running so a demo works at any hour; POLL_WHEN_CLOSED=1
+   * forces round-the-clock polling.
+   */
+  private shouldIdle(): boolean {
+    if (this.engine.mode === 'simulated') return false;
+    if (process.env.POLL_WHEN_CLOSED === '1') return false;
+    const open = isMarketHours() && isTradingDayNow();
+    if (open !== this.marketWasOpen) {
+      this.marketWasOpen = open;
+      console.log(`[poller] market ${open ? 'open — polling' : 'closed — idling until the next session'}`);
+    }
+    return !open;
+  }
+
   private async cycle(): Promise<void> {
     if (this.running) return; // never overlap slow cycles
+    if (this.shouldIdle()) {
+      // Keep clients connected and showing "Market closed"; skip the fetch.
+      this.io?.emit('connection-status', this.engine.status());
+      return;
+    }
     this.running = true;
     const startedAt = Date.now();
     try {
