@@ -1,0 +1,55 @@
+# CI for the options-flow dashboard.
+#
+# This exists because a type error reached production once already: `next build`
+# failed on the deploy host while the repo looked fine, and the failure was only
+# discovered at deploy time. Every check below runs on the PR, so a broken tree
+# is caught before it can be merged and shipped.
+#
+# No database is required. `prisma generate` (via postinstall) does not need
+# DATABASE_URL, and the DB-backed specs self-skip unless RUN_DB_TESTS=1.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A newer push to the same branch makes an in-flight run obsolete — cancel it
+# rather than burning Actions minutes on a stale commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck · test · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # package.json requires >=18.17; 20 is the LTS the app is built against.
+          node-version: '20'
+          cache: npm
+
+      # `npm ci` installs exactly the lockfile and runs postinstall
+      # (prisma generate), which the typecheck and build both depend on.
+      - name: Install dependencies
+        run: npm ci
+
+      # Broader than the build: tsconfig.json also covers scripts/, which
+      # next build deliberately excludes so dev tooling can never block a
+      # deploy. Running it here surfaces script drift on the PR instead.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # The check that would have caught the original production failure.
+      - name: Build
+        run: npm run build

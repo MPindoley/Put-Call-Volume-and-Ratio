@@ -8,11 +8,14 @@ the two named gaps have been implemented to match.
 ## Scan table (FlowTable)
 
 1. **Column budget.** The scan table is a dense, single-glance grid; it carries a
-   fixed, small column set (currently 15: Ticker, P/C, Puts 5m, Calls 5m, Net
-   Flow, Prem 5m, IV30, IVR, Skew, OI P/C, zSkew30, zSkew90, Unusual, P/C 30m,
-   Updated). New signals do not get new columns — they go to the ticker detail
-   view or the right-panel tabs. Adding a column is a deliberate budget decision,
-   not a default.
+   fixed, small column set (currently 16: Ticker, Last, P/C, Puts 5m, Calls 5m,
+   Net Flow, Prem 5m, IV30, IVR, Skew, OI P/C, zSkew30, zSkew90, Unusual,
+   P/C 30m, Updated). New signals do not get new columns — they go to the ticker
+   detail view or the right-panel tabs. Adding a column is a deliberate budget
+   decision, not a default.
+   *`Last` was added deliberately (15 → 16): it is not a signal but the
+   reference every other column is read against, and it is the only column
+   sourced from a live feed rather than the delayed chain.*
 2. **One meaning per color.** Green = bullish / call-side, red = bearish /
    put-side, everywhere. Amber/`caution` = "needs attention / elevated" (spikes,
    unconfirmed catalysts). Slate/grey = neutral or muted. A color never carries a
@@ -26,7 +29,11 @@ the two named gaps have been implemented to match.
    `+2.4` etc.)*
 4. **Warming / insufficient-history states are muted, never alarming.** A metric
    still accumulating shows a slate `—` (or "warming N/…"), not an error color.
-   Absence of data is the correct state, styled as such.
+   Absence of data is the correct state, styled as such. The `Last` column
+   follows the same rule in a sharper form: with no live quote it shows `—`
+   rather than borrowing the delayed chain price, and a quote older than 3
+   minutes dims to slate instead of implying it is current. A price that claims
+   to be live and is not is worse than no price.
 5. **Sort, filter, pin, flash.** Columns are sortable; sector/flow filters and a
    ticker search narrow the set; pinned tickers stay on top; a row flashes briefly
    on a significant net-flow change and then settles.

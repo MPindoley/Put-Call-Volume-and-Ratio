@@ -24,6 +24,7 @@ import {
 import { loadInstrumentConfigs } from './interpretation';
 import { backfillRegimeHistory } from './regime-jobs';
 import { loadLatestIntoEngine } from './sector-analytics';
+import { getQuoteClient, type QuoteClient } from './quotes';
 import { FlowSimulator } from './simulator';
 import { isTradingDayNow } from './trading-calendar';
 import { TRACKED_UNIVERSE } from './universe';
@@ -40,6 +41,9 @@ export class Poller {
   private simulator = new FlowSimulator();
   private lastFetched = new Map<string, number>();
   private running = false;
+  private quoting = false;
+  private quotes: QuoteClient | null = getQuoteClient();
+  private quoteTask: cron.ScheduledTask | null = null;
   private marketWasOpen: boolean | null = null;
   private task: cron.ScheduledTask | null = null;
   private maintenanceTask: cron.ScheduledTask | null = null;
@@ -70,6 +74,16 @@ export class Poller {
     });
     void this.cycle(); // immediate first cycle
     this.task = cron.schedule(`*/${intervalSec} * * * * *`, () => void this.cycle());
+
+    // Live-quote sweep on its own, much faster cadence. It covers the WHOLE
+    // universe every pass (~28 batched requests, ~580 KB) instead of rotating,
+    // so price freshness is independent of the ~9-minute chain rotation.
+    if (this.quotes) {
+      const quoteSec = Math.max(15, Number(process.env.QUOTE_INTERVAL_SEC ?? 60));
+      console.log(`[poller] live quotes: ${this.quotes.name}, every ${quoteSec}s, ${TRACKED_UNIVERSE.length} symbols`);
+      void this.quoteCycle();
+      this.quoteTask = cron.schedule(`*/${quoteSec} * * * * *`, () => void this.quoteCycle());
+    }
     // Baselines, alert scoring, provisional metrics and retention: every 2 hours.
     this.maintenanceTask = cron.schedule('11 */2 * * *', () => void runMaintenance(this.engine));
     // Pinned end-of-day capture: checked every 5 min; fires once in the
@@ -80,8 +94,32 @@ export class Poller {
     this.edgarTask = cron.schedule('23 5 * * *', () => void refreshEdgarConfirmations());
   }
 
+  /**
+   * Sweep live underlying prices for the whole universe and push the deltas.
+   * Deliberately independent of cycle(): it must not wait on the chain
+   * rotation, and a quote failure must not disturb chain polling (or vice
+   * versa). Idles outside trading hours on the same rule as cycle().
+   */
+  private async quoteCycle(): Promise<void> {
+    if (!this.quotes || this.quoting || this.shouldIdle()) return;
+    this.quoting = true;
+    try {
+      const quotes = await this.quotes.fetchAll(TRACKED_UNIVERSE.map((u) => u.symbol));
+      const touched = this.engine.applyQuotes(quotes);
+      if (this.io && touched.length > 0) this.io.emit('flow-update', touched);
+      if (this.quotes.lastErrors > 0) {
+        console.warn(`[poller] quote sweep: ${this.quotes.lastErrors} batch(es) failed, ${quotes.length} quotes applied`);
+      }
+    } catch (err) {
+      console.error('[poller] quote sweep failed:', err instanceof Error ? err.message : err);
+    } finally {
+      this.quoting = false;
+    }
+  }
+
   stop(): void {
     this.task?.stop();
+    this.quoteTask?.stop();
     this.maintenanceTask?.stop();
     this.eodTask?.stop();
     this.edgarTask?.stop();
