@@ -18,6 +18,13 @@ import { TokenBucket, withBackoff } from './rate-limiter';
 
 const BASE = 'https://cdn.cboe.com/api/global/delayed_quotes';
 
+/**
+ * How long to stop issuing tokens after the CDN returns 429. Long enough that
+ * the in-flight burst drains before we probe again, short enough that a single
+ * blip does not cost a whole rotation.
+ */
+const RATE_LIMIT_COOLDOWN_MS = 15_000;
+
 interface CboeContract {
   /** OCC-style id, e.g. "AAPL260117C00150000". */
   option?: string;
@@ -105,11 +112,19 @@ export class CboeClient implements OptionsDataProvider {
   }
 
   private async get<T>(url: string, priority: number, label: string): Promise<T> {
-    await this.bucket.acquire(priority);
     return withBackoff(
       async () => {
+        // Acquire INSIDE the retry, so every attempt is metered. Acquiring once
+        // outside let a single token buy up to `retries + 1` real requests — at
+        // CBOE_RPM=60 that is a true ceiling of ~300/min, which is what pushed
+        // the CDN into 429s, whose retries then compounded the overshoot.
+        await this.bucket.acquire(priority);
         const res = await fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store' });
-        if (res.status === 429) throw new Error('rate limited (429)');
+        if (res.status === 429) {
+          // Slow the whole client down, not just this request.
+          this.bucket.penalize(RATE_LIMIT_COOLDOWN_MS);
+          throw new Error('rate limited (429)');
+        }
         if (!res.ok) throw new Error(`cboe ${res.status} for ${label}`);
         return (await res.json()) as T;
       },
