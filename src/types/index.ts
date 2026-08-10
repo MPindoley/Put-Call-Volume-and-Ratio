@@ -167,8 +167,18 @@ export interface TickerFlow {
   volumeVsExpected: number;
   /** P/C ratio, one point per minute, last 30 minutes. */
   ratioSparkline: number[];
+  /** Price from the option-chain snapshot — 15-minute delayed, like the chain. */
   underlyingPrice: number;
   priceChangePct: number;
+  /**
+   * Live last-trade price from the quote sweep, independent of the chain
+   * rotation. Null until the first sweep lands (never back-filled from the
+   * delayed price, so "live" always means live). `livePriceAt` is the venue
+   * trade time in ms, for ageing the quote in the UI.
+   */
+  livePrice: number | null;
+  livePriceChangePct: number | null;
+  livePriceAt: number | null;
   /** 30-day implied volatility (vol points, e.g. 27.1) and day change. */
   iv30: number | null;
   iv30Change: number | null;

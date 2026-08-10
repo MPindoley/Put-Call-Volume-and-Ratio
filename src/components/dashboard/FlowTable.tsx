@@ -18,6 +18,12 @@ import { Sparkline } from './Sparkline';
 
 const COLUMNS: { key: SortKey | null; label: string; className: string; title?: string }[] = [
   { key: 'symbol', label: 'Ticker', className: 'w-24' },
+  {
+    key: 'livePrice',
+    label: 'Last',
+    className: 'w-20 text-right',
+    title: 'Live last-trade price and % change. Independent of the 15-minute delayed option chain — dimmed when the quote is stale, "—" when there is none',
+  },
   { key: 'putCallRatio', label: 'P/C', className: 'w-14 text-right' },
   { key: 'putVolume', label: 'Puts 5m', className: 'w-16 text-right' },
   { key: 'callVolume', label: 'Calls 5m', className: 'w-16 text-right' },
@@ -85,6 +91,53 @@ function skewColor(rrSkew25: number | null, inverse: boolean): string {
   return bullish ? 'text-bullish' : bearish ? 'text-bearish' : 'text-slate-400';
 }
 
+/** A live quote older than this reads as stale and is visibly dimmed. */
+const QUOTE_STALE_MS = 180_000;
+
+/**
+ * Live last-trade price. This is the one column NOT derived from the delayed
+ * option chain, so it must never silently borrow the chain's price: with no
+ * live quote it shows "—" (UI-CONSTRAINTS §4, absence styled as absence), and a
+ * quote past QUOTE_STALE_MS dims rather than pretending to be current. The
+ * delayed chain price stays available on hover for comparison.
+ */
+function PriceCell({ row }: { row: TickerFlow }): JSX.Element {
+  const { livePrice, livePriceChangePct, livePriceAt } = row;
+  if (livePrice === null) {
+    return (
+      <span className="w-20 text-right tnum text-slate-600" title="No live quote yet">
+        —
+      </span>
+    );
+  }
+  const ageMs = livePriceAt !== null ? Date.now() - livePriceAt : null;
+  const stale = ageMs !== null && ageMs > QUOTE_STALE_MS;
+  const dir = livePriceChangePct === null ? 0 : Math.sign(livePriceChangePct);
+  const delayed = row.underlyingPrice > 0 ? `delayed chain px ${row.underlyingPrice.toFixed(2)}` : 'no chain price yet';
+  return (
+    <span
+      className={cn(
+        'w-20 text-right tnum',
+        stale ? 'text-slate-500' : dir > 0 ? 'text-bullish' : dir < 0 ? 'text-bearish' : 'text-slate-300',
+      )}
+      title={
+        `Live ${livePrice.toFixed(2)}` +
+        (livePriceChangePct !== null ? ` (${livePriceChangePct >= 0 ? '+' : ''}${livePriceChangePct.toFixed(2)}%)` : '') +
+        (ageMs !== null ? ` · ${Math.round(ageMs / 1000)}s old${stale ? ' (stale)' : ''}` : '') +
+        ` · ${delayed}`
+      }
+    >
+      {livePrice.toFixed(2)}
+      {livePriceChangePct !== null && (
+        <span className="ml-1 text-[10px]">
+          {livePriceChangePct >= 0 ? '+' : ''}
+          {livePriceChangePct.toFixed(1)}%
+        </span>
+      )}
+    </span>
+  );
+}
+
 function Row({ row, pinned, flash }: { row: TickerFlow; pinned: boolean; flash: 'bullish' | 'bearish' | null }): JSX.Element {
   const togglePin = useFlowStore((s) => s.togglePin);
   return (
@@ -132,6 +185,7 @@ function Row({ row, pinned, flash }: { row: TickerFlow; pinned: boolean; flash: 
           </span>
         )}
       </div>
+      <PriceCell row={row} />
       <span className={cn('w-14 text-right tnum font-semibold', row.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
         {formatRatio(row.putCallRatio)}
       </span>

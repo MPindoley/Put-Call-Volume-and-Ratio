@@ -204,6 +204,13 @@ export class FlowEngine {
       ratioSparkline: st.sparkline.map((p) => Number(p.ratio.toFixed(3))),
       underlyingPrice: agg.underlyingPrice,
       priceChangePct: agg.priceChangePct,
+      // The quote sweep runs on its own (much faster) cadence and rebuilds
+      // nothing here, so carry the last live quote across a chain refresh —
+      // otherwise the price would blank every time the rotation reaches this
+      // name. Reads the previous flow: the literal is evaluated before assign.
+      livePrice: st.flow?.livePrice ?? null,
+      livePriceChangePct: st.flow?.livePriceChangePct ?? null,
+      livePriceAt: st.flow?.livePriceAt ?? null,
       iv30: agg.iv30,
       iv30Change: agg.iv30Change,
       ivRank: ctx?.ivRank ?? analytics?.ivRank ?? null,
@@ -276,6 +283,29 @@ export class FlowEngine {
 
   allFlows(): TickerFlow[] {
     return [...this.tickers.values()].map((t) => t.flow);
+  }
+
+  /**
+   * Overlay live underlying quotes onto whatever the (15-minute delayed) chain
+   * rotation last produced. Only the price fields move: every chain-derived
+   * analytic — P/C, IV, skew, OI, GEX — keeps the delayed value it was computed
+   * from, because mixing a live price into a delayed surface would silently
+   * misstate those. `livePriceAt` carries the venue trade time so the UI can age
+   * the quote rather than implying it is current.
+   *
+   * Returns the flows actually touched, so the poller can push just those.
+   */
+  applyQuotes(quotes: { symbol: string; price: number; changePct: number | null; at: number }[]): TickerFlow[] {
+    const touched: TickerFlow[] = [];
+    for (const q of quotes) {
+      const state = this.tickers.get(q.symbol);
+      if (!state || !(q.price > 0)) continue;
+      state.flow.livePrice = q.price;
+      state.flow.livePriceChangePct = q.changePct;
+      state.flow.livePriceAt = q.at;
+      touched.push(state.flow);
+    }
+    return touched;
   }
 
   getFlow(symbol: string): TickerFlow | null {
@@ -371,6 +401,9 @@ export class FlowEngine {
         ratioSparkline: [],
         underlyingPrice: 0,
         priceChangePct: 0,
+        livePrice: null,
+        livePriceChangePct: null,
+        livePriceAt: null,
         iv30: null,
         iv30Change: null,
         ivRank: null,
