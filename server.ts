@@ -23,10 +23,15 @@ async function main(): Promise<void> {
   const io = createSocketServer(httpServer);
 
   const poller = new Poller(io);
-  poller.start();
 
+  // Open the port BEFORE any polling starts. The first chain cycle parses
+  // multi-MB JSON (SPY alone is ~6 MB) and res.json() blocks the event loop
+  // while it does, at concurrency 10. Doing that before the port is listening
+  // — or while the platform is issuing its first healthcheck — starves the
+  // probe, and the container gets SIGTERM'd as a failed deploy.
   httpServer.listen(port, () => {
     console.log(`▲ options-flow-dashboard ready on http://localhost:${port} (${dev ? 'dev' : 'production'})`);
+    poller.start();
   });
 
   const shutdown = (): void => {

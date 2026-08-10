@@ -72,7 +72,12 @@ export class Poller {
       await backfillRegimeHistory(); // seed vol+trend regime history (gamma null) once
       await runMaintenance(this.engine);
     });
-    void this.cycle(); // immediate first cycle
+    // Give the health probe a clean window before the first heavy cycle: a
+    // chain fetch parses multi-MB JSON and blocks the event loop in bursts, so
+    // firing it the instant the port opens can still starve the platform's
+    // first healthcheck and get the deploy killed.
+    const warmupMs = Math.max(0, Number(process.env.POLL_WARMUP_MS ?? 8_000));
+    setTimeout(() => void this.cycle(), warmupMs).unref();
     this.task = cron.schedule(`*/${intervalSec} * * * * *`, () => void this.cycle());
 
     // Live-quote sweep on its own, much faster cadence. It covers the WHOLE
@@ -81,7 +86,9 @@ export class Poller {
     if (this.quotes) {
       const quoteSec = Math.max(15, Number(process.env.QUOTE_INTERVAL_SEC ?? 60));
       console.log(`[poller] live quotes: ${this.quotes.name}, every ${quoteSec}s, ${TRACKED_UNIVERSE.length} symbols`);
-      void this.quoteCycle();
+      // Staggered after the chain warmup so the two sweeps do not both land
+      // on top of the healthcheck window.
+      setTimeout(() => void this.quoteCycle(), warmupMs + 2_000).unref();
       this.quoteTask = cron.schedule(`*/${quoteSec} * * * * *`, () => void this.quoteCycle());
     }
     // Baselines, alert scoring, provisional metrics and retention: every 2 hours.
