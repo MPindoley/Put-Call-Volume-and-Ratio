@@ -32,6 +32,8 @@ interface CboeContract {
 }
 
 interface CboeResponse {
+  /** Snapshot generation time, UTC, "YYYY-MM-DD HH:MM:SS". */
+  timestamp?: string;
   data?: {
     options?: CboeContract[];
     current_price?: number;
@@ -39,6 +41,31 @@ interface CboeResponse {
     iv30?: number;
     iv30_change?: number;
   };
+}
+
+/**
+ * A name that stops trading does not disappear from this CDN. CBOE keeps
+ * serving its last snapshot indefinitely — plausible price, HTTP 200, no error
+ * — so a delisted ticker reads exactly like a live one. Measured on the live
+ * feed: DFS frozen 450 days at $198.10, BK 81 days at $137.16, both with an
+ * empty option chain. Ingesting those shows a ghost price as if it were today.
+ *
+ * The payload's own timestamp is the only reliable liveness signal, so refuse a
+ * snapshot that is clearly frozen rather than publishing a stale number.
+ * The threshold is deliberately generous — a long weekend plus a holiday is
+ * ~4 days, and the poller idles while the market is closed anyway.
+ */
+export const MAX_SNAPSHOT_AGE_MS = 5 * 86_400_000;
+
+/**
+ * Age of a CBOE snapshot, or null when the stamp is absent or unparseable.
+ * Null means "cannot tell" and callers must fail OPEN: a CDN format change
+ * must never take the whole feed down.
+ */
+export function snapshotAgeMs(timestamp: string | undefined, now = Date.now()): number | null {
+  if (!timestamp) return null;
+  const ms = Date.parse(`${timestamp.replace(' ', 'T')}Z`);
+  return Number.isFinite(ms) ? now - ms : null;
 }
 
 interface CboeIndexQuote {
@@ -96,6 +123,15 @@ export class CboeClient implements OptionsDataProvider {
       priority,
       `cboe/${symbol}`,
     );
+
+    // Refuse a frozen snapshot (delisted/halted name) instead of publishing a
+    // ghost price. Null age = cannot tell → proceed, never fail the feed.
+    const age = snapshotAgeMs(data.timestamp);
+    if (age !== null && age > MAX_SNAPSHOT_AGE_MS) {
+      throw new Error(
+        `stale snapshot for ${symbol}: ${(age / 86_400_000).toFixed(0)}d old — delisted or halted?`,
+      );
+    }
 
     const agg: OptionsChainAggregate = {
       symbol,
