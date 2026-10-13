@@ -59,9 +59,13 @@ export const LEARNING_PARAMS: LearningParams = {
  * evidence was filtered on. Books under different versions never mix.
  */
 export function learningVersion(p: LearningParams, thresholdVersion: string, regimeConfigVersion: string): string {
+  // Every constant that changes what a stored book means is in here — the
+  // base-rate sample floor, the frozen-price rule and the conviction combination
+  // included — so a rule change starts a new series instead of mislabelling one.
   const s =
     `l1|h=${p.horizon}|b=${p.basis}|hl=${p.halfLifeSessions}` +
     `|k=${p.prior.signal},${p.prior.regime},${p.prior.sector},${p.prior.ticker}` +
+    `|mb=${MIN_BASE_SAMPLE}|fr=${FROZEN_RUN_SESSIONS}|cap=${CONVICTION_CAP}|comb=sqrtm` +
     `|t=${thresholdVersion}|r=${regimeConfigVersion}`;
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
@@ -321,39 +325,293 @@ interface Counts {
 export type BaseRateFn = (type: string, symbol: string, cell: string, direction: Direction) => number | null;
 
 /**
- * Base-rate lookup as known at `asOfIdx`: the ticker's own in-regime day counts
- * when it has at least `minTickerDays`, otherwise its cohort's pooled counts —
- * the matrix's rule, restricted to days whose outcome was knowable by asOf.
+ * Fewest observations a base rate may rest on. Point-in-time base rates are
+ * built only from days already knowable, so early on a cohort's "ordinary day"
+ * can rest on two or three observations and read 0% or 100% — which would make
+ * any excess measured against it meaningless (observed: a replay whose early
+ * bases averaged 37% on data whose true base was ~50%, inflating the measured
+ * edge by ~13 points). Below this, there is no base rate: the row is skipped
+ * as unbased, never measured against noise.
  */
-export function buildBaseRates(
-  days: readonly DayObs[],
-  asOfIdx: number,
-  minTickerDays: number,
-  cohortOf: (symbol: string) => string | null,
-): BaseRateFn {
-  const ticker = new Map<string, Counts>();
-  const cohort = new Map<string, Counts>();
-  const bump = (m: Map<string, Counts>, k: string, ret: number): void => {
+export const MIN_BASE_SAMPLE = 30;
+
+/**
+ * Point-in-time base rates, advanced forward through time.
+ *
+ * Rebuilding base rates from scratch for every session is O(days × sessions):
+ * ~2,000 eligible stock-days per session means ~130M operations to backfill a
+ * year of books. The sweep instead sorts days by when their outcome became
+ * knowable and adds them incrementally as `advanceTo` moves forward, so a whole
+ * backfill (or a self-grading replay) costs one pass. It can only move forward
+ * — exactly the point-in-time direction.
+ */
+export class BaseRateSweep {
+  private readonly days: DayObs[];
+  private next = 0;
+  private asOf = -Infinity;
+  private readonly ticker = new Map<string, Counts>();
+  private readonly cohort = new Map<string, Counts>();
+
+  constructor(
+    days: readonly DayObs[],
+    private readonly minTickerDays: number,
+    private readonly cohortOf: (symbol: string) => string | null,
+    private readonly minSample = MIN_BASE_SAMPLE,
+  ) {
+    this.days = [...days].sort((a, b) => a.knownIdx - b.knownIdx);
+  }
+
+  /** Include every day knowable by `asOfIdx`. Never moves backward. */
+  advanceTo(asOfIdx: number): this {
+    if (asOfIdx < this.asOf) throw new Error(`BaseRateSweep cannot move backward (${asOfIdx} < ${this.asOf})`);
+    this.asOf = asOfIdx;
+    while (this.next < this.days.length && this.days[this.next]!.knownIdx <= asOfIdx) {
+      const d = this.days[this.next++]!;
+      this.bump(this.ticker, `${d.type}|${d.symbol}|${d.cell}`, d.ret);
+      const co = this.cohortOf(d.symbol);
+      if (co) this.bump(this.cohort, `${d.type}|${co}|${d.cell}`, d.ret);
+    }
+    return this;
+  }
+
+  /**
+   * The ticker's own in-regime counts when it has at least `minTickerDays`,
+   * otherwise its cohort's pooled counts — the matrix's rule. Null when fewer
+   * than `minSample` observations back it: never a guess.
+   */
+  readonly lookup: BaseRateFn = (type, symbol, cell, direction) => {
+    const own = this.ticker.get(`${type}|${symbol}|${cell}`);
+    let c: Counts | undefined = own && own.total >= this.minTickerDays ? own : undefined;
+    if (!c) {
+      const co = this.cohortOf(symbol);
+      c = co ? this.cohort.get(`${type}|${co}|${cell}`) : undefined;
+    }
+    if (!c || c.total < Math.max(1, this.minSample)) return null;
+    return (direction === 'bullish' ? c.pos : c.neg) / c.total;
+  };
+
+  private bump(m: Map<string, Counts>, k: string, ret: number): void {
     const c = m.get(k) ?? { pos: 0, neg: 0, total: 0 };
     if (ret > 0) c.pos += 1;
     else if (ret < 0) c.neg += 1;
     c.total += 1;
     m.set(k, c);
-  };
-  for (const d of days) {
-    if (d.knownIdx > asOfIdx) continue;
-    bump(ticker, `${d.type}|${d.symbol}|${d.cell}`, d.ret);
-    const co = cohortOf(d.symbol);
-    if (co) bump(cohort, `${d.type}|${co}|${d.cell}`, d.ret);
   }
-  return (type, symbol, cell, direction) => {
-    const own = ticker.get(`${type}|${symbol}|${cell}`);
-    let c: Counts | undefined = own && own.total >= minTickerDays ? own : undefined;
-    if (!c) {
-      const co = cohortOf(symbol);
-      c = co ? cohort.get(`${type}|${co}|${cell}`) : undefined;
-    }
-    if (!c || c.total <= 0) return null;
-    return (direction === 'bullish' ? c.pos : c.neg) / c.total;
+}
+
+/** One-shot base rates as known at `asOfIdx` (a sweep advanced once). */
+export function buildBaseRates(
+  days: readonly DayObs[],
+  asOfIdx: number,
+  minTickerDays: number,
+  cohortOf: (symbol: string) => string | null,
+  minSample = MIN_BASE_SAMPLE,
+): BaseRateFn {
+  return new BaseRateSweep(days, minTickerDays, cohortOf, minSample).advanceTo(asOfIdx).lookup;
+}
+
+// ─── Data health ──────────────────────────────────────────────────────────────
+
+/** Consecutive identical closes at which a price is treated as frozen, not traded. */
+export const FROZEN_RUN_SESSIONS = 5;
+
+/**
+ * Sessions on which a name's close was FROZEN: part of a run of at least
+ * `minRun` consecutive sessions with an identical close. A traded stock
+ * essentially never settles at exactly the same price five sessions running;
+ * a halted or delisted one does, and CBOE serves its last snapshot forever
+ * (measured: DFS frozen 451 days). Before the runtime stale-snapshot guard
+ * existed, those ghosts could be captured as "final" closes. Learning excludes
+ * them — a 0% "return" off a ghost price is not evidence of anything.
+ */
+export function frozenSessions(
+  closes: ReadonlyMap<string, number>,
+  sessions: readonly string[],
+  minRun = FROZEN_RUN_SESSIONS,
+): Set<string> {
+  const out = new Set<string>();
+  let run: string[] = [];
+  let last: number | undefined;
+  const flush = (): void => {
+    if (run.length >= minRun) for (const d of run) out.add(d);
   };
+  for (const d of sessions) {
+    const c = closes.get(d);
+    if (c === undefined) {
+      flush();
+      run = [];
+      last = undefined;
+      continue;
+    }
+    if (last !== undefined && c === last) run.push(d);
+    else {
+      flush();
+      run = [d];
+    }
+    last = c;
+  }
+  flush();
+  return out;
+}
+
+// ─── Self-grading ─────────────────────────────────────────────────────────────
+
+/**
+ * One past conviction, graded. The forecast is "this name lands on the
+ * predicted side `q` points more often than its base rate"; the outcome is
+ * whether it did.
+ */
+export interface Forecast {
+  asOfIdx: number;
+  symbol: string;
+  direction: Direction;
+  /** Predicted excess hit probability (|conviction|), > 0. */
+  q: number;
+  /** No-skill hit probability for that direction, as known at asOf. */
+  base: number;
+  hit: boolean;
+}
+
+export interface CalibrationBin {
+  label: string;
+  n: number;
+  /** Mean predicted excess (q) in the bin. */
+  predicted: number;
+  /** Realized excess: hit rate − mean base. */
+  realized: number;
+  hitRate: number;
+  base: number;
+  /** 95% interval on the realized excess (Wilson on the hit rate, minus base). */
+  ci: { lo: number; hi: number } | null;
+}
+
+export interface Calibration {
+  n: number;
+  hitRate: number | null;
+  base: number | null;
+  /** Mean predicted vs realized excess — calibration-in-the-large. */
+  predicted: number | null;
+  realized: number | null;
+  ci: { lo: number; hi: number } | null;
+  /**
+   * Brier skill vs the no-skill forecast (p = base): > 0 means the learning adds
+   * information beyond base rates; < 0 means it is making things worse.
+   */
+  skill: number | null;
+  bins: CalibrationBin[];
+  /** Same statistics per calendar month of the forecast date — the trend. */
+  byMonth: { month: string; n: number; realized: number; predicted: number; skill: number | null }[];
+}
+
+/** Wilson score interval (local copy keeps learning.ts free of runtime imports). */
+function wilson(hits: number, n: number, z = 1.96): { lo: number; hi: number } | null {
+  if (n <= 0) return null;
+  const p = hits / n;
+  const z2 = z * z;
+  const denom = 1 + z2 / n;
+  const center = (p + z2 / (2 * n)) / denom;
+  const half = (z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / denom;
+  return { lo: Math.max(0, center - half), hi: Math.min(1, center + half) };
+}
+
+const BINS: { label: string; lo: number; hi: number }[] = [
+  { label: '1–3 pts', lo: 0.01, hi: 0.03 },
+  { label: '3–6 pts', lo: 0.03, hi: 0.06 },
+  { label: '6–10 pts', lo: 0.06, hi: 0.1 },
+  { label: '10+ pts', lo: 0.1, hi: Infinity },
+];
+
+function summarize(fs: readonly Forecast[]): {
+  n: number;
+  hits: number;
+  hitRate: number;
+  base: number;
+  predicted: number;
+  realized: number;
+  ci: { lo: number; hi: number } | null;
+  skill: number | null;
+} | null {
+  if (fs.length === 0) return null;
+  const n = fs.length;
+  const hits = fs.filter((f) => f.hit).length;
+  const base = fs.reduce((s, f) => s + f.base, 0) / n;
+  const predicted = fs.reduce((s, f) => s + f.q, 0) / n;
+  const hitRate = hits / n;
+  const w = wilson(hits, n);
+  let bsModel = 0;
+  let bsRef = 0;
+  for (const f of fs) {
+    const y = f.hit ? 1 : 0;
+    const p = Math.min(0.99, Math.max(0.01, f.base + f.q));
+    bsModel += (p - y) ** 2;
+    bsRef += (f.base - y) ** 2;
+  }
+  return {
+    n,
+    hits,
+    hitRate,
+    base,
+    predicted,
+    realized: hitRate - base,
+    ci: w ? { lo: w.lo - base, hi: w.hi - base } : null,
+    skill: bsRef > 0 ? 1 - bsModel / bsRef : null,
+  };
+}
+
+/**
+ * Did the convictions mean what they said? A well-calibrated learner's 6-point
+ * leans land ~6 points above base. Bins expose over-/under-confidence; Brier
+ * skill answers "better than just knowing the base rate?"; the monthly series
+ * answers "is it getting better?".
+ */
+export function calibrate(forecasts: readonly Forecast[], sessions: readonly string[]): Calibration {
+  const all = summarize(forecasts);
+  const bins: CalibrationBin[] = [];
+  for (const b of BINS) {
+    const s = summarize(forecasts.filter((f) => f.q >= b.lo && f.q < b.hi));
+    if (!s) continue;
+    bins.push({ label: b.label, n: s.n, predicted: s.predicted, realized: s.realized, hitRate: s.hitRate, base: s.base, ci: s.ci });
+  }
+  const byMonthMap = new Map<string, Forecast[]>();
+  for (const f of forecasts) {
+    const month = (sessions[f.asOfIdx] ?? '').slice(0, 7);
+    const list = byMonthMap.get(month) ?? [];
+    list.push(f);
+    byMonthMap.set(month, list);
+  }
+  const byMonth = [...byMonthMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, fs]) => {
+      const s = summarize(fs)!;
+      return { month, n: s.n, realized: s.realized, predicted: s.predicted, skill: s.skill };
+    });
+  return {
+    n: all?.n ?? 0,
+    hitRate: all?.hitRate ?? null,
+    base: all?.base ?? null,
+    predicted: all?.predicted ?? null,
+    realized: all?.realized ?? null,
+    ci: all?.ci ?? null,
+    skill: all?.skill ?? null,
+    bins,
+    byMonth,
+  };
+}
+
+/** Share of own-data weight at which an estimate counts as "established". */
+export const ESTABLISHED_EVIDENCE = 0.5;
+
+/** How many nodes per level have earned at least half their weight from their own data. */
+export function establishedCounts(book: EdgeBook): Record<Level, { established: number; total: number }> {
+  const out = Object.fromEntries(LEVELS.map((l) => [l, { established: 0, total: 0 }])) as Record<
+    Level,
+    { established: number; total: number }
+  >;
+  for (const [key, s] of Object.entries(book.nodes)) {
+    const level = key.slice(0, key.indexOf(':')) as Level;
+    if (!out[level]) continue;
+    out[level].total += 1;
+    if (s.nEff / (s.nEff + book.params.prior[level]) >= ESTABLISHED_EVIDENCE) out[level].established += 1;
+  }
+  return out;
 }

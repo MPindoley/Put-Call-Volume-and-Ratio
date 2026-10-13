@@ -299,7 +299,63 @@ accuracy numbers become one query-param away from a production screen.
 
 ---
 
-## 5. Cross-cutting invariants (the short list a reviewer should protect)
+## 5. Learning loop (edge book, conviction, self-grading)
+
+The app learns which of its OWN signals work and weights what it shows by that.
+Code: `learning.ts` (pure math), `learning-data.ts` (inputs), `learning-jobs.ts`
+(nightly job, report). It does not learn prices, and it never adds signals.
+
+### 5.1 Learned edge = hit rate above the regime-matched base rate, shrunk
+Evidence is §4.6's definition unchanged: 10-session excess vs SPY, hit on the
+predicted side, measured against the regime-matched no-skill rate. Estimates
+shrink along a strictly nested chain — 0 → signal → ·regime → ·sector →
+·ticker — each moving from its parent in proportion nEff/(nEff+k), k =
+40/40/60/80. **If reversed** (raw per-stock hit rates): with ~540 names, a few
+look brilliant by luck every month, and the scan table would rank them first.
+
+### 5.2 Not a fitted model
+No regression, tree or network. At hundreds to low thousands of graded signals
+a model memorises noise and backtests beautifully. The signal grid stays fixed
+(§4.3); learning only weights it. **Revisit** when graded signals number in the
+many thousands and self-grading (5.6) shows the simple weighting has stalled.
+
+### 5.3 Recency half-life of 120 sessions
+Evidence weight halves every ~6 months by fire date. **If reversed** (equal
+weight forever): a signal that stopped working coasts on old wins indefinitely.
+
+### 5.4 Point-in-time books, immutable and versioned
+A book dated D sees only outcomes knowable by D (a terminal name only after its
+quiet period) and base rates as known at D. One row per (asOf, version); never
+rewritten. Past books are reconstructed on first run and flagged. The version
+hashes every constant that changes a book's meaning (params, base-rate floor,
+frozen rule, conviction combination, thresholds, regime config). **If
+reversed**: self-grading would grade the app on answers it peeked at.
+
+### 5.5 Refuse thin or ghost inputs
+- A base rate needs ≥ 30 observations (`MIN_BASE_SAMPLE`); below it the row is
+  *unbased* and skipped. Measured reason: early point-in-time bases resting on
+  2–3 days read 0%/100%; a replay over data whose true base was ~50% averaged
+  37% and inflated the measured edge by ~13 points.
+- Sessions in a run of ≥ 5 identical closes (`FROZEN_RUN_SESSIONS`) are a
+  halted/delisted name's ghost price — excluded from evidence and base rates.
+- Names that stop trading mid-window are graded to their last close
+  (`terminalOn`), not dropped (survivorship); sectors come from the persisted
+  Ticker row when a name has left the universe.
+
+### 5.6 The app grades itself
+Every past conviction is replayed point-in-time and graded: claimed vs
+delivered excess, by strength bin and by month, plus a Brier skill score
+against the no-skill forecast. A skill ≤ 0 is reported as such. **If removed**:
+"the app is learning" becomes unfalsifiable.
+
+### 5.7 Conviction combination: signed sum ÷ √m, capped at 25 points
+Co-firing signals are often correlated (skew_z and divergence both read skew);
+a sum overstates them, a mean understates independent confirmation. √m is the
+compromise, and it is itself on trial in 5.6. Below 1 point it shows "—".
+
+---
+
+## 6. Cross-cutting invariants (the short list a reviewer should protect)
 
 1. Stored data is raw market fact; interpretation (inverse flips, labels)
    happens at the surface.
@@ -315,3 +371,5 @@ accuracy numbers become one query-param away from a production screen.
    anything variance- or horizon-related.
 6. External services are treated politely and defensively: throttles, declared
    identity, caching, backoff — the free-data constraint is a hard one.
+7. Learning only weights the fixed signal grid; every learned number is
+   point-in-time, shrunk on thin evidence, and graded against what happened.

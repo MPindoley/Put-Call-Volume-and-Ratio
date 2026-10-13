@@ -57,6 +57,9 @@ export function Dashboard(): JSX.Element {
           <a href="/sectors" className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-surface-overlay hover:text-slate-200">
             Cohorts
           </a>
+          <a href="/learning" className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-surface-overlay hover:text-slate-200">
+            Learning
+          </a>
           <NotificationBell />
           <SettingsPanel />
         </div>
