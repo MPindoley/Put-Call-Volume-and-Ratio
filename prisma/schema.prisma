@@ -376,6 +376,34 @@ model SignalLog {
   @@index([scored, firedOn])
 }
 
+/// What the app has learned about its own signals as of one session — the edge
+/// book (src/lib/learning.ts). Built ONLY from signals whose outcome was knowable
+/// by `asOf`, with base rates as known at `asOf`, so a past book can be graded
+/// without peeking. Immutable once written: one row per (asOf, version). A
+/// version change (params, signal thresholds, regime config) starts a new series
+/// rather than rewriting history.
+model EdgeBook {
+  id            BigInt   @id @default(autoincrement())
+  /// ET session date the book describes.
+  asOf          DateTime
+  /// learningVersion: learning params + thresholdVersion + regimeConfigVersion.
+  version       String
+  /// Graded signals that entered the book; those known but lacking a base rate.
+  rowsUsed      Int
+  rowsUnbased   Int
+  /// { [nodeKey]: { n, nEff, excess } } — sufficient statistics per node.
+  nodes         Json
+  /// { [symbol]: { s: score, p: [[signalType, direction, edge, n], …] } } for every
+  /// ticker with a signal that session — exactly what the UI showed that night.
+  convictions   Json
+  /// True when built after the fact (backfill) rather than on the night itself.
+  reconstructed Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@unique([asOf, version])
+  @@index([version, asOf])
+}
+
 /// A contiguous backwardation episode per ticker (termSlope below the threshold),
 /// opened/extended/closed forward-only from persisted daily termSlope. On close,
 /// the PRIMARY resolution is the curve shape — 'front_collapse' (near-end IV fell

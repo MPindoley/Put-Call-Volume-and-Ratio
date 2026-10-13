@@ -17,6 +17,8 @@ import { thresholdVersion } from './signals';
 import { regimeConfigVersion } from './regime';
 import { getAnalyticsConfig } from './analytics-config';
 import { GET as regimeGET } from '@/app/api/accuracy/regime/route';
+import { GET as learningGET } from '@/app/api/learning/route';
+import { refreshEdgeBooks } from './learning-jobs';
 
 const RUN = process.env.RUN_DB_TESTS === '1' && !!prisma;
 const db = prisma!;
@@ -34,6 +36,7 @@ function weekdays(n: number): Date[] {
 }
 
 async function wipe(): Promise<void> {
+  await db.edgeBook.deleteMany({});
   await db.signalLog.deleteMany({});
   await db.dailyMetric.deleteMany({});
   await db.dailyRegime.deleteMany({});
@@ -43,6 +46,8 @@ async function wipe(): Promise<void> {
       { symbol: 'SPY', sector: 'ETF' },
       { symbol: 'AAPL', sector: 'Technology' },
       { symbol: 'XLF', sector: 'ETF' },
+      { symbol: 'XLK', sector: 'ETF' },
+      { symbol: 'MSFT', sector: 'Technology' },
       // Delisted name: persisted with its sector, absent from the live universe.
       { symbol: 'DEADCO', sector: 'Financials' },
     ],
@@ -213,6 +218,99 @@ describe.skipIf(!RUN)('PIT integration (RUN_DB_TESTS=1)', () => {
 
     // Idempotent: a second pass rewrites nothing.
     expect(await scoreSignals()).toBe(0);
+  });
+
+  it('(f): the edge book learns point-in-time, nightly and immutably', async () => {
+    const cfg = await getAnalyticsConfig();
+    const tv = thresholdVersion(cfg);
+    const rv = regimeConfigVersion({
+      volDeadband: cfg.regimeVolDeadband,
+      trendDeadbandPct: cfg.regimeTrendDeadbandPct,
+      gammaDeadbandFrac: cfg.regimeGammaDeadbandFrac,
+      persistDays: cfg.regimePersistDays,
+    });
+    const N = 60;
+    const days = weekdays(N);
+    const metrics = [];
+    for (let i = 0; i < N; i++) {
+      const row = (symbol: string, close: number, oi: boolean) => ({
+        symbol,
+        date: days[i]!,
+        close,
+        final: true,
+        historicalCloseOnly: false,
+        ...(oi ? { putOI: 1000, callOI: 1000 } : {}),
+      });
+      metrics.push(row('SPY', 500, false)); // flat market → excess = raw
+      metrics.push(row('XLK', 200, false));
+      // Oscillating names: 10-session forward returns change sign → base ≈ 50%.
+      metrics.push(row('AAPL', 100 + 5 * Math.sin(i / 3), true));
+      metrics.push(row('MSFT', 100 + 5 * Math.cos(i / 3), true));
+    }
+    await db.dailyMetric.createMany({ data: metrics });
+    await db.dailyRegime.createMany({
+      data: days.map((date) => ({ date, volState: 'pos', trendState: 'pos', gammaState: 'pos', regimeConfigVersion: rv, final: true })),
+    });
+    // 40 graded bullish pc_extreme signals each: AAPL hits 3 of 4, MSFT 1 of 2.
+    const sigs = [];
+    for (let i = 0; i < 40; i++) {
+      for (const [symbol, hit] of [['AAPL', i % 4 !== 0], ['MSFT', i % 2 === 0]] as const) {
+        sigs.push({
+          symbol,
+          firedOn: days[i]!,
+          signalType: 'pc_extreme',
+          direction: 'bullish',
+          thresholdVersion: tv,
+          regimeConfigVersion: rv,
+          regimeVol: 'pos',
+          regimeTrend: 'pos',
+          regimeGamma: 'pos',
+          scored: true,
+          fwd10ExSpy: hit ? 0.02 : -0.02,
+        });
+      }
+    }
+    await db.signalLog.createMany({ data: sigs });
+
+    const res = await refreshEdgeBooks();
+    // First outcome is knowable at session 10 (fired 0 + horizon 10) → books 10..59.
+    expect(res?.written).toBe(50);
+    expect(res?.reconstructed).toBe(49); // only tonight's is live
+
+    const books = await db.edgeBook.findMany({ orderBy: { asOf: 'asc' } });
+    const latest = books[books.length - 1]!;
+    expect(latest.reconstructed).toBe(false);
+    expect(latest.rowsUsed).toBe(80); // every signal's outcome known by session 59
+    expect(latest.rowsUnbased).toBe(0); // cohort (XLK) base rates filled in
+
+    // Point-in-time: the book for session 20 knows only signals fired ≤ session 10.
+    const at20 = books.find((b) => b.asOf.getTime() === days[20]!.getTime())!;
+    expect(at20.rowsUsed).toBe(22);
+
+    // It learned that AAPL's signals are better than MSFT's — but shrunk.
+    const nodes = latest.nodes as Record<string, { n: number; excess: number; nEff: number }>;
+    const aapl = nodes['ticker:pc_extreme|bullish|pos|pos|Technology|AAPL']!;
+    const msft = nodes['ticker:pc_extreme|bullish|pos|pos|Technology|MSFT']!;
+    expect(aapl.n).toBe(40);
+    expect(aapl.excess / aapl.nEff).toBeGreaterThan(msft.excess / msft.nEff);
+
+    // Tonight's convictions are recorded for names with a signal that session.
+    const at30 = books.find((b) => b.asOf.getTime() === days[30]!.getTime())!;
+    const conv = at30.convictions as Record<string, { s: number; p: unknown[] }>;
+    expect(Object.keys(conv).sort()).toEqual(['AAPL', 'MSFT']);
+    expect(conv.AAPL!.s).toBeGreaterThan(conv.MSFT!.s);
+
+    // Immutable + idempotent: a second run writes nothing.
+    expect((await refreshEdgeBooks())?.written).toBe(0);
+
+    // And the API reports what was learned.
+    const body = await (await learningGET()).json();
+    expect(body.books).toBe(50);
+    const sig = body.learning.signals.find((x: { signalType: string }) => x.signalType === 'pc_extreme');
+    expect(sig.direction).toBe('bullish');
+    expect(sig.n).toBe(80);
+    expect(sig.edge).toBeGreaterThan(0);
+    expect(sig.edge).toBeLessThan(sig.raw); // shrunk toward zero
   });
 
   it('(c): ?demo=1 is refused (403) under NODE_ENV=production', async () => {

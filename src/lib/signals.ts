@@ -36,6 +36,33 @@ export function thresholdVersion(cfg: {
 }
 
 /**
+ * Signal types a ticker-day was ELIGIBLE to fire, reconstructed from persisted
+ * daily state — the base-rate denominators (every day a signal could have fired,
+ * signal or not). One definition shared by the accuracy matrix and the learning
+ * loop, so the two can never measure against different denominators.
+ */
+export function eligibleFromMetric(dm: {
+  putOI: number | null;
+  callOI: number | null;
+  spikeBaselineDays: number | null;
+}): string[] {
+  const out: string[] = [];
+  if (dm.putOI !== null && dm.callOI !== null && dm.callOI > 0) out.push('pc_extreme');
+  if ((dm.spikeBaselineDays ?? 0) >= 5) out.push('spike_alert');
+  return out;
+}
+
+export function eligibleFromRelative(
+  rel: { skewZ30: number | null; divergenceWindow: number },
+  divergenceWindow: number,
+): string[] {
+  const out: string[] = [];
+  if (rel.skewZ30 !== null) out.push('skew_z');
+  if (rel.divergenceWindow >= divergenceWindow) out.push('divergence');
+  return out;
+}
+
+/**
  * Wilson score interval for a binomial proportion — the cheap, honest CI on a
  * cell's hit rate. Returns [lo, hi] in [0,1]; null when n = 0.
  */
