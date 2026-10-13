@@ -23,6 +23,7 @@ import { finalizedMetricWhere } from './finalized-reads';
 import { refreshEarningsRealized, refreshEventGauges, refreshIdiosyncraticEvents } from './event-jobs';
 import { recordDailyRegime } from './regime-jobs';
 import { logSignals, scoreSignals, trackBackwardationEpisodes } from './signal-jobs';
+import { refreshEdgeBooks } from './learning-jobs';
 import type { FlowEngine } from './flow-engine';
 import { finalizeDailyCapture, loadLatestIntoEngine } from './sector-analytics';
 import { NOT_SEEDED } from './seed-guard';
@@ -383,6 +384,9 @@ export async function runMaintenance(engine: FlowEngine): Promise<void> {
   // Phase 4.3: fill forward returns for signals whose 20-trading-day window elapsed.
   const sigScored = await scoreSignals();
   if (sigScored > 0) console.log(`[signals] scored ${sigScored} signals (20-td window elapsed)`);
+  // Learning loop: write tonight's edge book from the just-graded evidence
+  // (and reconstruct any missing past books under the current version).
+  await refreshEdgeBooks();
   await pruneHistory();
   if (baselines > 0 || scored > 0 || idio > 0 || realized > 0) {
     console.log(

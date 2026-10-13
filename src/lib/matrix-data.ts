@@ -27,6 +27,8 @@ import {
   baseHitProb,
   buildMatrix,
   DIRECTIONAL_SIGNALS,
+  eligibleFromMetric,
+  eligibleFromRelative,
   eventTrackSummary,
   mergeCounts,
   thresholdVersion,
@@ -268,13 +270,11 @@ export async function buildRegimeMatrixData(horizon: Horizon, basis: Basis): Pro
     for (const r of dms) {
       if (!r.final || r.historicalCloseOnly) continue;
       const d = iso(r.date);
-      if (r.putOI !== null && r.callOI !== null && r.callOI > 0) addElig('pc_extreme', r.symbol, d);
-      if ((r.spikeBaselineDays ?? 0) >= 5) addElig('spike_alert', r.symbol, d);
+      for (const type of eligibleFromMetric(r)) addElig(type, r.symbol, d);
     }
     for (const r of rels) {
       const d = iso(r.date);
-      if (r.skewZ30 !== null) addElig('skew_z', r.symbol, d);
-      if (r.divergenceWindow >= cfg.divergenceWindow) addElig('divergence', r.symbol, d);
+      for (const type of eligibleFromRelative(r, cfg.divergenceWindow)) addElig(type, r.symbol, d);
     }
 
     // Regime-matched day counts per (type, symbol, cell), + cohort merges.

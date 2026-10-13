@@ -4,6 +4,8 @@ import {
   buildMatrix,
   classifyCurveResolution,
   classifyResolution,
+  eligibleFromMetric,
+  eligibleFromRelative,
   eventTrackSummary,
   mergeCounts,
   thresholdVersion,
@@ -171,5 +173,23 @@ describe('eventTrackSummary', () => {
     expect(s.hits).toBe(2);
     expect(s.hitRate).toBeCloseTo(2 / 3, 10);
     expect(s.undershootBase).toBeCloseTo(2 / 4, 10); // 2 of 4 events undershot implied
+  });
+});
+
+describe('eligibility rules (shared by the matrix and the learning loop)', () => {
+  it('pc_extreme needs both OI legs and a positive call OI', () => {
+    expect(eligibleFromMetric({ putOI: 10, callOI: 5, spikeBaselineDays: null })).toEqual(['pc_extreme']);
+    expect(eligibleFromMetric({ putOI: 10, callOI: 0, spikeBaselineDays: null })).toEqual([]);
+    expect(eligibleFromMetric({ putOI: null, callOI: 5, spikeBaselineDays: null })).toEqual([]);
+  });
+
+  it('spike_alert needs an armed baseline (≥5 sample days)', () => {
+    expect(eligibleFromMetric({ putOI: null, callOI: null, spikeBaselineDays: 5 })).toEqual(['spike_alert']);
+    expect(eligibleFromMetric({ putOI: null, callOI: null, spikeBaselineDays: 4 })).toEqual([]);
+  });
+
+  it('skew_z needs a z-score; divergence needs a full trend window', () => {
+    expect(eligibleFromRelative({ skewZ30: 0, divergenceWindow: 20 }, 20)).toEqual(['skew_z', 'divergence']);
+    expect(eligibleFromRelative({ skewZ30: null, divergenceWindow: 19 }, 20)).toEqual([]);
   });
 });
