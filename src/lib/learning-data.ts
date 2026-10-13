@@ -13,10 +13,13 @@
 import { getAnalyticsConfig, type AnalyticsConfig } from './analytics-config';
 import type { PrismaClient } from '@prisma/client';
 import { finalizedMetricWhere } from './finalized-reads';
+import type { TickerConviction } from '@/types';
 import {
   buildBaseRates,
   buildEdgeBook,
   combineConviction,
+  CONVICTION_DISPLAY_FLOOR,
+  estimateEdge,
   LEARNING_PARAMS,
   learningVersion,
   type Conviction,
@@ -278,4 +281,165 @@ export function serializeConvictions(convictions: Map<string, Conviction>): Reco
     };
   }
   return out;
+}
+
+/**
+ * Inverse of serializeConvictions → what the engine stamps onto each flow.
+ * Malformed entries are skipped, never guessed; a net below the display floor
+ * keeps its score but gets direction null (the UI shows "—").
+ */
+export function parseConvictions(json: unknown, asOf: string): Map<string, TickerConviction> {
+  const out = new Map<string, TickerConviction>();
+  if (!json || typeof json !== 'object') return out;
+  for (const [symbol, raw] of Object.entries(json as Record<string, unknown>)) {
+    const v = raw as { s?: unknown; p?: unknown };
+    if (typeof v?.s !== 'number' || !Number.isFinite(v.s) || !Array.isArray(v.p)) continue;
+    const parts: TickerConviction['parts'] = [];
+    for (const p of v.p) {
+      if (!Array.isArray(p) || p.length < 4) continue;
+      const [signalType, direction, edge, n] = p as [unknown, unknown, unknown, unknown];
+      if (typeof signalType !== 'string' || (direction !== 'bullish' && direction !== 'bearish')) continue;
+      if (typeof edge !== 'number' || typeof n !== 'number') continue;
+      parts.push({ signalType, direction, edge, n });
+    }
+    const thin = Math.abs(v.s) < CONVICTION_DISPLAY_FLOOR;
+    out.set(symbol, { score: v.s, direction: thin ? null : v.s > 0 ? 'bullish' : 'bearish', asOf, parts });
+  }
+  return out;
+}
+
+/** One stock's memory: its own graded signals, and how today's learned edges were built. */
+export interface TrackRecord {
+  horizon: number;
+  basis: string;
+  /** This stock's OWN record per signal (unshrunk, raw hit rate), current definitions. */
+  bySignal: {
+    signalType: string;
+    direction: Direction;
+    graded: number;
+    hits: number;
+    hitRate: number | null;
+    avgRet: number | null;
+  }[];
+  /** Most recent signals, newest first; `pending` = window not elapsed yet. */
+  recent: {
+    firedOn: string;
+    signalType: string;
+    direction: Direction;
+    ret: number | null;
+    hit: boolean | null;
+    terminalOn: string | null;
+    pending: boolean;
+  }[];
+  /** For each signal in the latest book's session: the shrinkage path, level by level. */
+  learned: {
+    signalType: string;
+    direction: Direction;
+    asOf: string;
+    edge: number;
+    path: { level: string; n: number; raw: number | null; edge: number; evidence: number }[];
+  }[];
+  /** Why `learned` may be empty: no book yet, or an ETF (reference only, never learned from). */
+  note: string | null;
+}
+
+export async function loadTrackRecord(
+  db: PrismaClient,
+  symbol: string,
+  cfgIn?: AnalyticsConfig,
+): Promise<TrackRecord> {
+  const cfg = cfgIn ?? (await getAnalyticsConfig());
+  const params = LEARNING_PARAMS;
+  const tVersion = thresholdVersion(cfg);
+  const rVersion = regimeConfigVersion({
+    volDeadband: cfg.regimeVolDeadband,
+    trendDeadbandPct: cfg.regimeTrendDeadbandPct,
+    gammaDeadbandFrac: cfg.regimeGammaDeadbandFrac,
+    persistDays: cfg.regimePersistDays,
+  });
+  const retField = `fwd${params.horizon}${params.basis === 'raw' ? 'Raw' : params.basis === 'exSpy' ? 'ExSpy' : 'ExSector'}`;
+  const rows = await db.signalLog.findMany({
+    where: {
+      symbol,
+      ...NOT_SEEDED,
+      signalType: { in: [...DIRECTIONAL_SIGNALS] },
+      direction: { in: ['bullish', 'bearish'] },
+      thresholdVersion: tVersion,
+      regimeConfigVersion: rVersion,
+    },
+    orderBy: { firedOn: 'desc' },
+  });
+
+  const groups = new Map<string, { graded: number; hits: number; sum: number }>();
+  const recent: TrackRecord['recent'] = [];
+  for (const r of rows) {
+    const dir = r.direction as Direction;
+    const ret = r.scored ? ((r as unknown as Record<string, number | null>)[retField] ?? null) : null;
+    const hit = ret === null ? null : dir === 'bullish' ? ret > 0 : ret < 0;
+    if (recent.length < 40) {
+      recent.push({
+        firedOn: iso(r.firedOn),
+        signalType: r.signalType,
+        direction: dir,
+        ret,
+        hit,
+        terminalOn: r.terminalOn ? iso(r.terminalOn) : null,
+        pending: !r.scored,
+      });
+    }
+    if (ret === null) continue;
+    const k = `${r.signalType}|${dir}`;
+    const g = groups.get(k) ?? { graded: 0, hits: 0, sum: 0 };
+    g.graded += 1;
+    if (hit) g.hits += 1;
+    g.sum += ret;
+    groups.set(k, g);
+  }
+  const bySignal: TrackRecord['bySignal'] = [...groups.entries()].map(([k, g]) => {
+    const [signalType, direction] = k.split('|') as [string, Direction];
+    return {
+      signalType,
+      direction,
+      graded: g.graded,
+      hits: g.hits,
+      hitRate: g.graded > 0 ? g.hits / g.graded : null,
+      avgRet: g.graded > 0 ? g.sum / g.graded : null,
+    };
+  });
+
+  const resolver = await loadBenchmarkResolver();
+  const sector = resolver.sectorFor(symbol);
+  const learned: TrackRecord['learned'] = [];
+  let note: string | null = null;
+  if (sector === 'ETF') {
+    note = 'ETF flow is structural hedging, not a directional bet — logged for reference, never learned from.';
+  } else {
+    const latest = await db.edgeBook.findFirst({
+      where: { version: currentLearningVersion(cfg) },
+      orderBy: { asOf: 'desc' },
+    });
+    if (!latest) {
+      note = 'No edge book yet — nothing has been graded under the current signal definitions.';
+    } else {
+      const book = bookFromRow(latest);
+      const asOf = iso(latest.asOf);
+      for (const r of rows.filter((x) => iso(x.firedOn) === asOf)) {
+        const est = estimateEdge(book, {
+          signalType: r.signalType,
+          direction: r.direction as Direction,
+          regime: `${r.regimeVol ?? 'na'}|${r.regimeTrend ?? 'na'}`,
+          sector,
+          symbol,
+        });
+        learned.push({
+          signalType: r.signalType,
+          direction: r.direction as Direction,
+          asOf,
+          edge: est.edge,
+          path: est.path.map((p) => ({ level: p.level, n: p.n, raw: p.raw, edge: p.edge, evidence: p.evidence })),
+        });
+      }
+    }
+  }
+  return { horizon: params.horizon, basis: params.basis, bySignal, recent, learned, note };
 }

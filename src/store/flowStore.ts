@@ -24,6 +24,7 @@ import type {
 export type SortKey =
   | 'symbol'
   | 'livePrice'
+  | 'conviction'
   | 'putCallRatio'
   | 'putVolume'
   | 'callVolume'
@@ -212,6 +213,7 @@ export function selectVisibleRows(state: FlowState): TickerFlow[] {
   const value = (r: TickerFlow): number | string => {
     switch (sortKey) {
       case 'symbol': return r.symbol;
+      case 'conviction': return r.conviction?.direction ? r.conviction.score : 0; // + bullish first (desc)
       case 'livePrice': return r.livePriceChangePct ?? -999; // % move, not dollar price
       case 'putCallRatio': return r.putCallRatio;
       case 'putVolume': return r.putVolume;

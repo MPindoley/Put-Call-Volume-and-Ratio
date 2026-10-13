@@ -10,6 +10,7 @@ import { SpikeBadge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Sparkline } from '@/components/dashboard/Sparkline';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
+import type { TrackRecord } from '@/lib/learning-data';
 import type { TickerFlow } from '@/types';
 
 interface HistoryPoint {
@@ -23,6 +24,7 @@ interface HistoryPoint {
 interface DetailResponse {
   flow: TickerFlow;
   history: HistoryPoint[];
+  trackRecord: TrackRecord | null;
 }
 
 export function TickerDetail({ symbol }: { symbol: string }): JSX.Element {
@@ -444,6 +446,157 @@ function IdiosyncraticCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
   );
 }
 
+const SIGNAL_NAMES: Record<string, string> = {
+  skew_z: 'Skew z',
+  divergence: 'Divergence',
+  pc_extreme: 'OI P/C extreme',
+  spike_alert: 'Volume spike',
+};
+const LEVEL_NAMES: Record<string, string> = {
+  signal: 'This signal, all names',
+  regime: '… in this market regime',
+  sector: '… in this sector',
+  ticker: '… on this stock',
+};
+
+const pts = (x: number): string => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}`;
+
+/**
+ * The stock's memory. Top: how today's learned edge was built, level by level —
+ * each row shows what that level's own data says (raw) and how much it was
+ * allowed to move the estimate (evidence). Then the name's own graded record and
+ * its recent signals. Raw per-stock hit rates are shown honestly as raw: they
+ * are small samples, which is exactly why the learned edge leans on the levels
+ * above.
+ */
+function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackRecord | null }): JSX.Element | null {
+  if (!record) return null;
+  const c = flow.conviction;
+  return (
+    <Card>
+      <CardHeader title={`Track record — what the app has learned (${record.horizon}-session excess vs SPY)`} />
+      <div className="space-y-4 px-4 pb-4 pt-3">
+        {record.note && <p className="text-[11px] text-slate-500">{record.note}</p>}
+
+        {record.learned.length > 0 && (
+          <div>
+            <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">
+              Learned edge for this session&apos;s signals ({record.learned[0]!.asOf})
+              {c?.direction && (
+                <span className={cn('ml-2 normal-case', c.direction === 'bullish' ? 'text-bullish' : 'text-bearish')}>
+                  net {c.direction} {pts(c.score)} pts
+                </span>
+              )}
+            </p>
+            <div className="space-y-3">
+              {record.learned.map((l) => (
+                <div key={`${l.signalType}|${l.direction}`}>
+                  <p className="text-[11px] text-slate-300">
+                    {SIGNAL_NAMES[l.signalType] ?? l.signalType}{' '}
+                    <span className={l.direction === 'bullish' ? 'text-bullish' : 'text-bearish'}>{l.direction}</span>
+                    <span className="ml-2 tnum font-semibold text-slate-100">{pts(l.edge)} pts above base</span>
+                  </p>
+                  <table className="mt-1 w-full text-[11px] tnum">
+                    <thead className="text-left text-[9px] uppercase tracking-wider text-slate-600">
+                      <tr>
+                        <th className="py-0.5 font-normal">Level</th>
+                        <th className="py-0.5 text-right font-normal">Graded</th>
+                        <th className="py-0.5 text-right font-normal" title="What this level's own data says, unshrunk">
+                          Own data
+                        </th>
+                        <th className="py-0.5 text-right font-normal" title="Share of the estimate this level's evidence earned">
+                          Weight
+                        </th>
+                        <th className="py-0.5 text-right font-normal">Estimate</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {l.path.map((p) => (
+                        <tr key={p.level} className="text-slate-400">
+                          <td className="py-0.5">{LEVEL_NAMES[p.level] ?? p.level}</td>
+                          <td className="py-0.5 text-right">{p.n}</td>
+                          <td className="py-0.5 text-right">{p.raw === null ? '—' : pts(p.raw)}</td>
+                          <td className="py-0.5 text-right">
+                            <span
+                              className="inline-block h-1.5 rounded-sm bg-slate-400/60 align-middle"
+                              style={{ width: `${Math.round(p.evidence * 40)}px` }}
+                            />{' '}
+                            {Math.round(p.evidence * 100)}%
+                          </td>
+                          <td className="py-0.5 text-right text-slate-200">{pts(p.edge)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 text-[10px] leading-relaxed text-slate-600">
+              Each level starts from the one above and moves only as far as its own evidence earns. Low weight means
+              &ldquo;not enough history here yet&rdquo; — the estimate leans on the broader record instead of a small sample.
+            </p>
+          </div>
+        )}
+
+        <div>
+          <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">This stock&apos;s own record (raw)</p>
+          {record.bySignal.length === 0 ? (
+            <p className="text-[11px] text-slate-500">No graded signals yet — grading needs {record.horizon}+ sessions after a signal fires.</p>
+          ) : (
+            <div className="space-y-0.5">
+              {record.bySignal.map((b) => (
+                <div key={`${b.signalType}|${b.direction}`} className="flex gap-3 text-[11px] tnum text-slate-300">
+                  <span className="w-40">
+                    {SIGNAL_NAMES[b.signalType] ?? b.signalType}{' '}
+                    <span className={b.direction === 'bullish' ? 'text-bullish' : 'text-bearish'}>{b.direction}</span>
+                  </span>
+                  <span className="w-24 text-right">
+                    {b.hits}/{b.graded} hit
+                  </span>
+                  <span className="w-16 text-right">{b.hitRate === null ? '—' : `${Math.round(b.hitRate * 100)}%`}</span>
+                  <span className="text-slate-500">avg {b.avgRet === null ? '—' : `${pts(b.avgRet)}%`}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {record.recent.length > 0 && (
+          <div>
+            <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">Recent signals</p>
+            <div className="max-h-48 space-y-0.5 overflow-auto">
+              {record.recent.map((r) => (
+                <div key={`${r.firedOn}|${r.signalType}`} className="flex gap-3 text-[11px] tnum">
+                  <span className="w-24 text-slate-400">{r.firedOn}</span>
+                  <span className="w-40 text-slate-300">
+                    {SIGNAL_NAMES[r.signalType] ?? r.signalType}{' '}
+                    <span className={r.direction === 'bullish' ? 'text-bullish' : 'text-bearish'}>{r.direction}</span>
+                  </span>
+                  <span className="w-16 text-right">
+                    {r.pending ? (
+                      <span className="text-slate-600">pending</span>
+                    ) : r.hit === null ? (
+                      <span className="text-slate-600">no grade</span>
+                    ) : r.hit ? (
+                      <span className="text-bullish">hit</span>
+                    ) : (
+                      <span className="text-bearish">miss</span>
+                    )}
+                  </span>
+                  <span className="text-slate-500">
+                    {r.ret === null ? '' : `${pts(r.ret)}%`}
+                    {r.terminalOn && <span className="ml-1 text-caution" title="Stopped trading inside the window — graded to its last close">· terminal {r.terminalOn}</span>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
   const { flow, history } = data;
   return (
@@ -483,6 +636,7 @@ function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
       <SectorRelativeCard flow={flow} />
       <EventGaugeCard flow={flow} />
       <IdiosyncraticCard flow={flow} />
+      <TrackRecordCard flow={flow} record={data.trackRecord} />
 
       <Card>
         <CardHeader title="Stored 5-min history (30 days)" />

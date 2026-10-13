@@ -8,14 +8,21 @@ the two named gaps have been implemented to match.
 ## Scan table (FlowTable)
 
 1. **Column budget.** The scan table is a dense, single-glance grid; it carries a
-   fixed, small column set (currently 16: Ticker, Last, P/C, Puts 5m, Calls 5m,
-   Net Flow, Prem 5m, IV30, IVR, Skew, OI P/C, zSkew30, zSkew90, Unusual,
-   P/C 30m, Updated). New signals do not get new columns — they go to the ticker
-   detail view or the right-panel tabs. Adding a column is a deliberate budget
-   decision, not a default.
+   fixed, small column set (currently 17: Ticker, Last, Conv, P/C, Puts 5m,
+   Calls 5m, Net Flow, Prem 5m, IV30, IVR, Skew, OI P/C, zSkew30, zSkew90,
+   Unusual, P/C 30m, Updated). New signals do not get new columns — they go to
+   the ticker detail view or the right-panel tabs. Adding a column is a
+   deliberate budget decision, not a default.
    *`Last` was added deliberately (15 → 16): it is not a signal but the
    reference every other column is read against, and it is the only column
    sourced from a live feed rather than the delayed chain.*
+   *`Conv` was added deliberately (16 → 17): it is not a new signal either but
+   the app's LEARNED verdict on the existing ones — each of the name's signals
+   from the latest session weighted by how well that signal has actually worked
+   (src/lib/learning.ts). It is placed up front because it summarises the
+   columns to its right. Unlike the z-score columns it is printed (rule 3): it is
+   sparse — only names with a signal that session — and it is the headline.
+   "—" whenever there is no signal or the evidence nets to ~0 (rule 4).*
 2. **One meaning per color.** Green = bullish / call-side, red = bearish /
    put-side, everywhere. Amber/`caution` = "needs attention / elevated" (spikes,
    unconfirmed catalysts). Slate/grey = neutral or muted. A color never carries a

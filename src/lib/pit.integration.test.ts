@@ -18,7 +18,9 @@ import { regimeConfigVersion } from './regime';
 import { getAnalyticsConfig } from './analytics-config';
 import { GET as regimeGET } from '@/app/api/accuracy/regime/route';
 import { GET as learningGET } from '@/app/api/learning/route';
-import { refreshEdgeBooks } from './learning-jobs';
+import { loadConvictionsIntoEngine, refreshEdgeBooks } from './learning-jobs';
+import { loadTrackRecord } from './learning-data';
+import { getFlowEngine } from './flow-engine';
 
 const RUN = process.env.RUN_DB_TESTS === '1' && !!prisma;
 const db = prisma!;
@@ -270,6 +272,22 @@ describe.skipIf(!RUN)('PIT integration (RUN_DB_TESTS=1)', () => {
         });
       }
     }
+    // Tonight's signals: fired on the latest session, not graded yet.
+    for (const symbol of ['AAPL', 'MSFT']) {
+      sigs.push({
+        symbol,
+        firedOn: days[N - 1]!,
+        signalType: 'pc_extreme',
+        direction: 'bullish',
+        thresholdVersion: tv,
+        regimeConfigVersion: rv,
+        regimeVol: 'pos',
+        regimeTrend: 'pos',
+        regimeGamma: 'pos',
+        scored: false,
+        fwd10ExSpy: null as unknown as number,
+      });
+    }
     await db.signalLog.createMany({ data: sigs });
 
     const res = await refreshEdgeBooks();
@@ -311,6 +329,28 @@ describe.skipIf(!RUN)('PIT integration (RUN_DB_TESTS=1)', () => {
     expect(sig.n).toBe(80);
     expect(sig.edge).toBeGreaterThan(0);
     expect(sig.edge).toBeLessThan(sig.raw); // shrunk toward zero
+
+    // The engine shows tonight's learned conviction…
+    const engine = getFlowEngine();
+    await loadConvictionsIntoEngine(engine);
+    const lastIso = days[N - 1]!.toISOString().slice(0, 10);
+    const ca = engine.convictions.get('AAPL')!;
+    const cm = engine.convictions.get('MSFT')!;
+    expect(ca.asOf).toBe(lastIso);
+    expect(ca.parts).toHaveLength(1);
+    expect(ca.score).toBeGreaterThan(cm.score); // AAPL's record earned more weight
+
+    // …and the ticker page shows the stock's memory.
+    const tr = await loadTrackRecord(db, 'AAPL');
+    expect(tr.bySignal).toEqual([
+      expect.objectContaining({ signalType: 'pc_extreme', direction: 'bullish', graded: 40, hits: 30 }),
+    ]);
+    expect(tr.recent[0]).toEqual(expect.objectContaining({ firedOn: lastIso, pending: true }));
+    expect(tr.learned).toHaveLength(1);
+    expect(tr.learned[0]!.path.map((p) => p.level)).toEqual(['signal', 'regime', 'sector', 'ticker']);
+    expect(tr.learned[0]!.path[3]!.n).toBe(40);
+    expect(tr.note).toBeNull();
+    engine.setConvictions(new Map()); // leave the singleton clean
   });
 
   it('(c): ?demo=1 is refused (403) under NODE_ENV=production', async () => {

@@ -24,6 +24,13 @@ const COLUMNS: { key: SortKey | null; label: string; className: string; title?: 
     className: 'w-20 text-right',
     title: 'Live last-trade price and % change. Independent of the 15-minute delayed option chain — dimmed when the quote is stale, "—" when there is none',
   },
+  {
+    key: 'conviction',
+    label: 'Conv',
+    className: 'w-16 text-right',
+    title:
+      "Learned conviction: this name's signals from the latest session, each weighted by how well that signal has ACTUALLY worked — hit-rate points above the no-skill base rate, shrunk toward zero on thin evidence. \"—\" = no signal, or not enough evidence to say",
+  },
   { key: 'putCallRatio', label: 'P/C', className: 'w-14 text-right' },
   { key: 'putVolume', label: 'Puts 5m', className: 'w-16 text-right' },
   { key: 'callVolume', label: 'Calls 5m', className: 'w-16 text-right' },
@@ -89,6 +96,58 @@ function skewColor(rrSkew25: number | null, inverse: boolean): string {
   const bullish = inverse ? rrSkew25 < 0 : rrSkew25 > 0;
   const bearish = inverse ? rrSkew25 > 4 : rrSkew25 < -4;
   return bullish ? 'text-bullish' : bearish ? 'text-bearish' : 'text-slate-400';
+}
+
+/** Conviction (hit-rate points above base) at which the cell's tint saturates. */
+const CONVICTION_SATURATE = 0.08;
+
+const SIGNAL_LABELS: Record<string, string> = {
+  skew_z: 'Skew z',
+  divergence: 'Divergence',
+  pc_extreme: 'OI P/C extreme',
+  spike_alert: 'Volume spike',
+};
+
+/**
+ * Learned conviction. Unlike the z-score columns this IS printed: it is sparse
+ * (only names with a signal this session) and it is the headline. Tint follows
+ * one-meaning-per-colour (green bullish / red bearish), intensity ∝ magnitude.
+ * "—" when there is no signal or the net is below the display floor — never a
+ * confident-looking number manufactured from thin evidence (§4).
+ */
+function ConvictionCell({ row }: { row: TickerFlow }): JSX.Element {
+  const c = row.conviction;
+  if (!c || c.direction === null) {
+    return (
+      <span
+        className="w-16 text-right tnum text-slate-600"
+        title={c ? `Signals fired ${c.asOf}, but learned evidence nets to ~0 — nothing worth claiming` : 'No signal this session'}
+      >
+        —
+      </span>
+    );
+  }
+  const pts = c.score * 100;
+  const intensity = Math.min(Math.abs(c.score) / CONVICTION_SATURATE, 1);
+  const rgb = c.direction === 'bullish' ? '74,222,128' : '248,113,113';
+  const detail = c.parts
+    .map(
+      (p) =>
+        `${SIGNAL_LABELS[p.signalType] ?? p.signalType} ${p.direction}: ${p.edge >= 0 ? '+' : ''}${(p.edge * 100).toFixed(1)} pts (n=${p.n})`,
+    )
+    .join('\n');
+  return (
+    <span className="flex w-16 justify-end">
+      <span
+        className={cn('rounded-sm px-1 tnum', c.direction === 'bullish' ? 'text-bullish' : 'text-bearish')}
+        style={{ backgroundColor: `rgba(${rgb},${(0.08 + intensity * 0.32).toFixed(2)})` }}
+        title={`Learned ${c.direction} lean ${pts >= 0 ? '+' : ''}${pts.toFixed(1)} pts above base (signals of ${c.asOf})\n${detail}`}
+      >
+        {pts >= 0 ? '+' : ''}
+        {Math.abs(pts) < 10 ? pts.toFixed(1) : pts.toFixed(0)}
+      </span>
+    </span>
+  );
 }
 
 /** A live quote older than this reads as stale and is visibly dimmed. */
@@ -186,6 +245,7 @@ function Row({ row, pinned, flash }: { row: TickerFlow; pinned: boolean; flash: 
         )}
       </div>
       <PriceCell row={row} />
+      <ConvictionCell row={row} />
       <span className={cn('w-14 text-right tnum font-semibold', row.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
         {formatRatio(row.putCallRatio)}
       </span>

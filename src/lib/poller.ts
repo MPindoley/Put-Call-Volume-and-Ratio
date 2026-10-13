@@ -23,6 +23,7 @@ import {
 } from './history-jobs';
 import { loadInstrumentConfigs } from './interpretation';
 import { backfillRegimeHistory } from './regime-jobs';
+import { loadConvictionsIntoEngine } from './learning-jobs';
 import { loadLatestIntoEngine } from './sector-analytics';
 import { getQuoteClient, type QuoteClient } from './quotes';
 import { FlowSimulator } from './simulator';
@@ -182,6 +183,8 @@ export class Poller {
 
     // Restore finalized sector-relative analytics so a restart keeps them.
     await loadLatestIntoEngine(this.engine);
+    // What the app has learned about each name's latest signals (edge book).
+    await loadConvictionsIntoEngine(this.engine);
   }
 
   /**
