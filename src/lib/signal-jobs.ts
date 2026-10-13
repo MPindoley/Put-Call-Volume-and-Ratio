@@ -295,10 +295,61 @@ export async function trackBackwardationEpisodes(now = new Date()): Promise<void
   });
 }
 
+/** Sessions a name must have been silent before a missing close counts as "stopped trading". */
+export const TERMINAL_QUIET_SESSIONS = 5;
+
+/**
+ * Where to measure a forward return to, for a signal fired at session `i0`
+ * with horizon `h`.
+ *
+ * Normally that is simply session i0+h. The survivorship case: a name that is
+ * acquired or delisted inside the window has no close at i0+h, so a naive
+ * lookup returns null and the signal silently drops out of every accuracy
+ * statistic. Those are disproportionately the BIG moves (an acquisition is a
+ * jump), so dropping them biases the record. Instead, grade to the last traded
+ * close — the terminal value — and flag it.
+ *
+ * A missing close must not be mistaken for a delisting, though: a failed
+ * capture day (e.g. a 429 storm) also leaves a hole. So it is terminal only if
+ * the name has NO close after the target date and has been silent for at least
+ * `quietSessions` sessions. A hole followed by later closes is a data gap → null.
+ */
+export function forwardEndpoint(
+  closes: ReadonlyMap<string, number>,
+  sessions: readonly string[],
+  i0: number,
+  h: number,
+  quietSessions = TERMINAL_QUIET_SESSIONS,
+): { date: string; terminal: boolean } | null {
+  const target = sessions[i0 + h];
+  const fired = sessions[i0];
+  if (target === undefined || fired === undefined) return null;
+  if (closes.has(target)) return { date: target, terminal: false };
+
+  // ISO dates sort lexicographically, so the max key is the last traded session.
+  let last: string | undefined;
+  for (const d of closes.keys()) if (last === undefined || d > last) last = d;
+  if (last === undefined || last <= fired) return null; // never traded after firing
+  if (last > target) return null; // traded again later → a data gap, not a delisting
+
+  const lastIdx = sessions.indexOf(last);
+  if (lastIdx < 0) return null;
+  const sessionsSilent = sessions.length - 1 - lastIdx;
+  if (sessionsSilent < quietSessions) return null; // may just be lagging capture
+  return { date: last, terminal: true };
+}
+
 /**
  * Fill forward returns for signals whose 20-trading-day window has elapsed.
- * Sessions are the canonical SPY close dates; a missing ticker/benchmark close at
- * an offset leaves that field null. Returns rows scored.
+ * Sessions are the canonical SPY close dates. A name that stopped trading inside
+ * the window is graded to its last traded close (see forwardEndpoint) and stamped
+ * `terminalOn`; any other missing close leaves that field null. Benchmarks are
+ * measured over the SAME span as the name, so the excess return compares like
+ * with like.
+ *
+ * Also re-examines rows scored earlier with a null 20-day return, so signals on
+ * names that delisted before this logic existed get graded retroactively. Those
+ * rows are only rewritten when a terminal grade is found. Returns rows written.
  */
 export async function scoreSignals(now = new Date()): Promise<number> {
   return (
@@ -315,7 +366,17 @@ export async function scoreSignals(now = new Date()): Promise<number> {
       const spyClose = new Map(spyRows.map((r) => [iso(r.date), r.close as number]));
       const lastIdx = sessions.length - 1;
 
-      const pending = await db.signalLog.findMany({ where: { scored: false }, orderBy: { firedOn: 'asc' }, take: 2000 });
+      const pending = await db.signalLog.findMany({
+        where: {
+          OR: [
+            { scored: false },
+            // Graded before terminal grading existed, with nothing to show for it.
+            { scored: true, fwd20Raw: null, terminalOn: null, seeded: false },
+          ],
+        },
+        orderBy: { firedOn: 'asc' },
+        take: 2000,
+      });
       if (pending.length === 0) return 0;
       const resolver = await loadBenchmarkResolver();
 
@@ -347,15 +408,30 @@ export async function scoreSignals(now = new Date()): Promise<number> {
         const benchSym = resolver.benchmarkFor(sig.symbol);
         const bCloses = benchSym && benchSym !== sig.symbol ? await closesOf(benchSym) : null;
 
-        const data: Record<string, number | boolean | null> = { scored: true };
+        const data: Record<string, number | boolean | Date | null> = { scored: true };
+        let terminalOn: string | null = null;
         for (const h of [5, 10, 20] as const) {
-          const dh = sessions[i0 + h]!;
-          const raw = logRet(tCloses, d0, dh);
+          const end = forwardEndpoint(tCloses, sessions, i0, h);
+          if (end?.terminal) terminalOn = end.date;
+          // Benchmarks over the same span as the name (to its terminal close if any).
+          const dh = end?.date ?? sessions[i0 + h]!;
+          const raw = end ? logRet(tCloses, d0, dh) : null;
           const spy = logRet(spyClose, d0, dh);
           const sec = bCloses ? logRet(bCloses, d0, dh) : null;
           data[`fwd${h}Raw`] = raw;
           data[`fwd${h}ExSpy`] = raw !== null && spy !== null ? raw - spy : null;
           data[`fwd${h}ExSector`] = raw !== null && sec !== null ? raw - sec : null;
+        }
+        if (terminalOn) data.terminalOn = new Date(`${terminalOn}T00:00:00Z`);
+
+        // A re-examined row is rewritten ONLY when terminal grading rescued it;
+        // otherwise its earlier grade stands untouched (and the event track below
+        // was already settled the first time round).
+        if (sig.scored) {
+          if (!terminalOn) continue;
+          await db.signalLog.update({ where: { id: sig.id }, data });
+          scored += 1;
+          continue;
         }
 
         // Event-badge realized move from the confirmed calendar event.

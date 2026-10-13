@@ -353,6 +353,10 @@ model SignalLog {
   realizedMove        Float?
   /// Backwardation: linked episode (resolution joined when the episode closes).
   episodeId           BigInt?
+  /// Set when the name stopped trading inside the forward window (acquired or
+  /// delisted): its forward returns run to this last traded close instead of
+  /// being left null, so the biggest moves are not silently dropped from the record.
+  terminalOn          DateTime?
   /// Forward log returns (fractions), filled once 20 trading days have elapsed.
   fwd5Raw             Float?
   fwd10Raw            Float?
