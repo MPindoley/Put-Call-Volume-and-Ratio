@@ -17,15 +17,21 @@ import type { TickerConviction } from '@/types';
 import {
   buildBaseRates,
   buildEdgeBook,
+  BaseRateSweep,
+  calibrate,
   combineConviction,
   CONVICTION_DISPLAY_FLOOR,
   estimateEdge,
+  frozenSessions,
   LEARNING_PARAMS,
   learningVersion,
+  type BaseRateFn,
+  type Calibration,
   type Conviction,
   type DayObs,
   type EdgeBook,
   type Evidence,
+  type Forecast,
   type LearningParams,
   type SignalKey,
 } from './learning';
@@ -56,6 +62,8 @@ export interface ActiveSignal extends SignalKey {
   cell: string;
   /** Forward return on the learning basis/horizon, once graded (null until then). */
   ret: number | null;
+  /** False while the forward window is still open. */
+  scored: boolean;
 }
 
 export interface LearningInputs {
@@ -68,6 +76,17 @@ export interface LearningInputs {
   activeBySession: Map<number, ActiveSignal[]>;
   minTickerDays: number;
   cohortOf: (symbol: string) => string | null;
+  /** Single names with frozen-price sessions (excluded from learning). */
+  frozen: FrozenRun[];
+  /** Signals skipped because they fired on, or were graded against, a frozen price. */
+  excludedFrozen: number;
+}
+
+export interface FrozenRun {
+  symbol: string;
+  sessions: number;
+  from: string;
+  to: string;
 }
 
 /** Reads every input the learning loop needs in one pass. Null when there are no sessions. */
@@ -104,55 +123,7 @@ export async function loadLearningInputs(
   const isEtf = (symbol: string, flag = false): boolean => flag || resolver.sectorFor(symbol) === 'ETF';
   const cohortOf = (symbol: string): string | null => resolver.benchmarkFor(symbol);
 
-  // ── Signals: evidence (graded) and active (per session) ──
-  const signals = await db.signalLog.findMany({
-    where: {
-      ...NOT_SEEDED,
-      signalType: { in: [...DIRECTIONAL_SIGNALS] },
-      direction: { in: ['bullish', 'bearish'] },
-      thresholdVersion: tVersion,
-      regimeConfigVersion: rVersion,
-    },
-  });
-  const evidence: RawEvidence[] = [];
-  const activeBySession = new Map<number, ActiveSignal[]>();
-  for (const r of signals) {
-    if (isEtf(r.symbol, r.isEtf)) continue;
-    const firedIdx = sessionIdx.get(iso(r.firedOn));
-    if (firedIdx === undefined) continue;
-    const key: SignalKey = {
-      signalType: r.signalType,
-      direction: r.direction as Direction,
-      regime: `${r.regimeVol ?? 'na'}|${r.regimeTrend ?? 'na'}`,
-      sector: resolver.sectorFor(r.symbol),
-      symbol: r.symbol,
-    };
-    const cell = `${r.regimeVol ?? 'na'}|${r.regimeTrend ?? 'na'}|${r.regimeGamma ?? 'na'}`;
-    const ret = r.scored ? ((r as unknown as Record<string, number | null>)[retField] ?? null) : null;
-
-    const list = activeBySession.get(firedIdx) ?? [];
-    list.push({ ...key, cell, ret });
-    activeBySession.set(firedIdx, list);
-
-    if (ret === null) continue;
-    // Knowable at the scheduled endpoint — or, for a name that stopped trading,
-    // only once it had been silent long enough to be called terminal.
-    let knownIdx = firedIdx + H;
-    if (r.terminalOn) {
-      const t = sessionIdx.get(iso(r.terminalOn));
-      if (t !== undefined) knownIdx = Math.max(knownIdx, t + TERMINAL_QUIET_SESSIONS);
-    }
-    evidence.push({
-      ...key,
-      cell,
-      firedIdx,
-      knownIdx,
-      hit: r.direction === 'bullish' ? ret > 0 : ret < 0,
-      ret,
-    });
-  }
-
-  // ── Base-rate day observations (matrix rules, point-in-time stamped) ──
+  // ── Daily state: closes (for base rates + data health) ──
   const dms = await db.dailyMetric.findMany({
     where: finalizedMetricWhere(),
     select: {
@@ -176,6 +147,80 @@ export async function loadLearningInputs(
     m.set(iso(r.date), r.close);
     closes.set(r.symbol, m);
   }
+
+  // Frozen-price sessions per single name (ghost closes of a halted/delisted
+  // name): excluded from every learning input, and reported for data health.
+  const frozenBy = new Map<string, Set<string>>();
+  const frozen: FrozenRun[] = [];
+  for (const [symbol, m] of closes) {
+    if (isEtf(symbol)) continue;
+    const f = frozenSessions(m, sessions);
+    if (f.size === 0) continue;
+    frozenBy.set(symbol, f);
+    const ds = [...f].sort();
+    frozen.push({ symbol, sessions: f.size, from: ds[0]!, to: ds[ds.length - 1]! });
+  }
+  frozen.sort((a, b) => b.sessions - a.sessions);
+  const isFrozen = (symbol: string, i: number): boolean => {
+    const d = sessions[i];
+    return d !== undefined && (frozenBy.get(symbol)?.has(d) ?? false);
+  };
+
+  // ── Signals: evidence (graded) and active (per session) ──
+  const signals = await db.signalLog.findMany({
+    where: {
+      ...NOT_SEEDED,
+      signalType: { in: [...DIRECTIONAL_SIGNALS] },
+      direction: { in: ['bullish', 'bearish'] },
+      thresholdVersion: tVersion,
+      regimeConfigVersion: rVersion,
+    },
+  });
+  const evidence: RawEvidence[] = [];
+  const activeBySession = new Map<number, ActiveSignal[]>();
+  let excludedFrozen = 0;
+  for (const r of signals) {
+    if (isEtf(r.symbol, r.isEtf)) continue;
+    const firedIdx = sessionIdx.get(iso(r.firedOn));
+    if (firedIdx === undefined) continue;
+    // A signal fired on — or graded against — a ghost price is not evidence.
+    if (isFrozen(r.symbol, firedIdx) || isFrozen(r.symbol, firedIdx + H)) {
+      excludedFrozen += 1;
+      continue;
+    }
+    const key: SignalKey = {
+      signalType: r.signalType,
+      direction: r.direction as Direction,
+      regime: `${r.regimeVol ?? 'na'}|${r.regimeTrend ?? 'na'}`,
+      sector: resolver.sectorFor(r.symbol),
+      symbol: r.symbol,
+    };
+    const cell = `${r.regimeVol ?? 'na'}|${r.regimeTrend ?? 'na'}|${r.regimeGamma ?? 'na'}`;
+    const ret = r.scored ? ((r as unknown as Record<string, number | null>)[retField] ?? null) : null;
+
+    const list = activeBySession.get(firedIdx) ?? [];
+    list.push({ ...key, cell, ret, scored: r.scored });
+    activeBySession.set(firedIdx, list);
+
+    if (ret === null) continue;
+    // Knowable at the scheduled endpoint — or, for a name that stopped trading,
+    // only once it had been silent long enough to be called terminal.
+    let knownIdx = firedIdx + H;
+    if (r.terminalOn) {
+      const t = sessionIdx.get(iso(r.terminalOn));
+      if (t !== undefined) knownIdx = Math.max(knownIdx, t + TERMINAL_QUIET_SESSIONS);
+    }
+    evidence.push({
+      ...key,
+      cell,
+      firedIdx,
+      knownIdx,
+      hit: r.direction === 'bullish' ? ret > 0 : ret < 0,
+      ret,
+    });
+  }
+
+  // ── Base-rate day observations (matrix rules, point-in-time stamped) ──
   const logRet = (m: Map<string, number> | undefined, from: string, to: string): number | null => {
     const a = m?.get(from);
     const b = m?.get(to);
@@ -199,6 +244,7 @@ export async function loadLearningInputs(
     const i = sessionIdx.get(d);
     const cell = cellByDate.get(d);
     if (i === undefined || cell === undefined) return;
+    if (isFrozen(symbol, i) || isFrozen(symbol, i + H)) return;
     const ret = fwdRet(symbol, i);
     if (ret === null) return;
     days.push({ type, symbol, cell, knownIdx: i + H, ret });
@@ -220,6 +266,8 @@ export async function loadLearningInputs(
     activeBySession,
     minTickerDays: cfg.baseRateMinTickerDays,
     cohortOf,
+    frozen,
+    excludedFrozen,
   };
 }
 
@@ -249,9 +297,13 @@ export function bookFromRow(row: { version: string; nodes: unknown; rowsUsed: nu
   };
 }
 
-/** The edge book as of session index `asOfIdx`, with base rates as known then. */
-export function bookAt(inputs: LearningInputs, asOfIdx: number): EdgeBook {
-  const base = buildBaseRates(inputs.days, asOfIdx, inputs.minTickerDays, inputs.cohortOf);
+/**
+ * The edge book as of session index `asOfIdx`, with base rates as known then.
+ * Pass `base` from a BaseRateSweep advanced to asOfIdx when building many books
+ * in order (backfill, self-grading); otherwise it is computed one-shot.
+ */
+export function bookAt(inputs: LearningInputs, asOfIdx: number, base?: BaseRateFn): EdgeBook {
+  base ??= buildBaseRates(inputs.days, asOfIdx, inputs.minTickerDays, inputs.cohortOf);
   const evidence: Evidence[] = inputs.evidence
     .filter((e) => e.knownIdx <= asOfIdx)
     .map((e) => ({ ...e, base: base(e.signalType, e.symbol, e.cell, e.direction) }));
@@ -442,4 +494,69 @@ export async function loadTrackRecord(
     }
   }
   return { horizon: params.horizon, basis: params.basis, bySignal, recent, learned, note };
+}
+
+/** A sweep over this input set's base-rate days (advance it forward only). */
+export function baseRateSweep(inputs: LearningInputs): BaseRateSweep {
+  return new BaseRateSweep(inputs.days, inputs.minTickerDays, inputs.cohortOf);
+}
+
+/**
+ * Replay every past session's conviction exactly as the app could have formed
+ * it then (point-in-time book and base rates), and grade each non-thin one
+ * whose outcome is now known. The forecast's base is the mean point-in-time
+ * base rate, in the predicted direction, of the signals behind it.
+ */
+export function collectForecasts(inputs: LearningInputs): Forecast[] {
+  const H = inputs.params.horizon;
+  const lastKnown = inputs.sessions.length - 1 - H; // outcome must be known by today
+  const firstKnown = inputs.evidence.reduce((m, e) => Math.min(m, e.knownIdx), Infinity);
+  if (!Number.isFinite(firstKnown) || firstKnown > lastKnown) return [];
+  const sweep = baseRateSweep(inputs);
+  const out: Forecast[] = [];
+  for (let a = firstKnown; a <= lastKnown; a++) {
+    const active = inputs.activeBySession.get(a);
+    if (!active || active.length === 0) continue;
+    const base = sweep.advanceTo(a).lookup;
+    const book = bookAt(inputs, a, base);
+    const bySymbol = new Map<string, ActiveSignal[]>();
+    for (const s of active) {
+      const list = bySymbol.get(s.symbol) ?? [];
+      list.push(s);
+      bySymbol.set(s.symbol, list);
+    }
+    for (const [symbol, sigs] of bySymbol) {
+      const c = combineConviction(book, sigs);
+      if (c.thin || c.direction === null) continue;
+      const ret = sigs.find((x) => x.ret !== null)?.ret ?? null; // same name, day, horizon → same return
+      if (ret === null) continue;
+      const bases = sigs
+        .map((x) => base(x.signalType, symbol, x.cell, c.direction!))
+        .filter((b): b is number => b !== null);
+      if (bases.length === 0) continue;
+      out.push({
+        asOfIdx: a,
+        symbol,
+        direction: c.direction,
+        q: Math.abs(c.score),
+        base: bases.reduce((s, b) => s + b, 0) / bases.length,
+        hit: c.direction === 'bullish' ? ret > 0 : ret < 0,
+      });
+    }
+  }
+  return out;
+}
+
+export interface SelfGrade {
+  version: string;
+  asOf: string;
+  calibration: Calibration;
+}
+
+export function selfGrade(inputs: LearningInputs): SelfGrade {
+  return {
+    version: inputs.version,
+    asOf: inputs.sessions[inputs.sessions.length - 1] ?? '',
+    calibration: calibrate(collectForecasts(inputs), inputs.sessions),
+  };
 }

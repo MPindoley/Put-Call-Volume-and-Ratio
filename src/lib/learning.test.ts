@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BaseRateSweep,
   buildBaseRates,
   buildEdgeBook,
+  calibrate,
+  establishedCounts,
+  frozenSessions,
+  MIN_BASE_SAMPLE,
+  type Forecast,
   combineConviction,
   CONVICTION_CAP,
   estimateEdge,
@@ -189,7 +195,7 @@ describe('buildBaseRates (point-in-time, matrix rules)', () => {
 
   it('ignores days whose outcome was not yet knowable', () => {
     const days = Array.from({ length: 30 }, (_, i) => day({ knownIdx: i < 25 ? 10 : 200, ret: i < 25 ? 0.01 : -0.01 }));
-    const base = buildBaseRates(days, 100, 20, cohortOf);
+    const base = buildBaseRates(days, 100, 20, cohortOf, 1); // sample floor off: testing PIT only
     expect(base('skew_z', 'AAPL', 'pos|pos|na', 'bullish')).toBe(1);
   });
 
@@ -199,7 +205,15 @@ describe('buildBaseRates (point-in-time, matrix rules)', () => {
 
   it('counts a zero return as neither up nor down (matrix rule)', () => {
     const days = Array.from({ length: 20 }, (_, i) => day({ ret: i < 10 ? 0 : 0.01 }));
-    expect(buildBaseRates(days, 100, 20, cohortOf)('skew_z', 'AAPL', 'pos|pos|na', 'bullish')).toBeCloseTo(0.5, 12);
+    expect(buildBaseRates(days, 100, 20, cohortOf, 1)('skew_z', 'AAPL', 'pos|pos|na', 'bullish')).toBeCloseTo(0.5, 12);
+  });
+
+  it(`refuses a base rate resting on fewer than ${MIN_BASE_SAMPLE} observations`, () => {
+    // Early on, two knowable days would read 0% or 100% — noise, not a base rate.
+    const two = [day({ symbol: 'MSFT', ret: -0.01 }), day({ symbol: 'MSFT', ret: -0.02 })];
+    expect(buildBaseRates(two, 100, 20, cohortOf)('skew_z', 'NEW', 'pos|pos|na', 'bullish')).toBeNull();
+    const enough = Array.from({ length: MIN_BASE_SAMPLE }, (_, i) => day({ symbol: 'MSFT', ret: i % 2 ? 0.01 : -0.01 }));
+    expect(buildBaseRates(enough, 100, 20, cohortOf)('skew_z', 'NEW', 'pos|pos|na', 'bullish')).toBeCloseTo(0.5, 12);
   });
 });
 
@@ -247,5 +261,102 @@ describe('parseConvictions (stored book → engine)', () => {
     expect([...m.keys()]).toEqual(['C']);
     expect(m.get('C')!.parts).toHaveLength(1); // the 'sideways' part is dropped
     expect(parseConvictions(null, 'x').size).toBe(0);
+  });
+});
+
+describe('BaseRateSweep', () => {
+  const cohortOf = (): string => 'XLK';
+  const days: DayObs[] = Array.from({ length: 300 }, (_, i) => ({
+    type: i % 2 ? 'skew_z' : 'pc_extreme',
+    symbol: ['AAPL', 'MSFT', 'NVDA'][i % 3]!,
+    cell: i % 5 ? 'pos|pos|na' : 'neg|pos|na',
+    knownIdx: (i * 7) % 97,
+    ret: ((i * 13) % 7) - 3, // mix of +, −, 0
+  }));
+
+  it('matches the one-shot computation at every point in time', () => {
+    const sweep = new BaseRateSweep(days, 20, cohortOf);
+    for (const a of [0, 5, 30, 60, 96, 200]) {
+      sweep.advanceTo(a);
+      const once = buildBaseRates(days, a, 20, cohortOf);
+      for (const sym of ['AAPL', 'MSFT', 'NVDA', 'NEW'])
+        for (const type of ['skew_z', 'pc_extreme'])
+          for (const cell of ['pos|pos|na', 'neg|pos|na'])
+            for (const dir of ['bullish', 'bearish'] as const)
+              expect(sweep.lookup(type, sym, cell, dir)).toBe(once(type, sym, cell, dir));
+    }
+  });
+
+  it('refuses to move backward in time', () => {
+    const sweep = new BaseRateSweep(days, 20, cohortOf).advanceTo(50);
+    expect(() => sweep.advanceTo(49)).toThrow(/backward/);
+  });
+});
+
+describe('frozenSessions', () => {
+  const S = Array.from({ length: 12 }, (_, i) => `2026-01-${String(i + 1).padStart(2, '0')}`);
+
+  it('flags a run of ≥5 identical closes (a ghost price), not shorter ties', () => {
+    const closes = new Map(S.map((d, i) => [d, i < 3 ? 100 + i : i < 9 ? 198.1 : 200 + i]));
+    const f = frozenSessions(closes, S);
+    expect([...f].sort()).toEqual(S.slice(3, 9)); // the six 198.1 sessions
+    const ties = new Map(S.map((d, i) => [d, i < 4 ? 50 : 50 + i])); // 4 equal, then moves
+    expect(frozenSessions(ties, S).size).toBe(0);
+  });
+
+  it('a missing close breaks a run rather than bridging it', () => {
+    const closes = new Map(S.filter((_, i) => i !== 3).map((d) => [d, 100]));
+    // runs: S0..S2 (3) | gap | S4..S11 (8) → only the second is frozen
+    expect([...frozenSessions(closes, S)].sort()).toEqual(S.slice(4));
+  });
+});
+
+describe('calibrate (self-grading)', () => {
+  const S = Array.from({ length: 60 }, (_, i) => (i < 30 ? `2026-08-${String(i + 1).padStart(2, '0')}` : `2026-09-${String(i - 29).padStart(2, '0')}`));
+  const f = (q: number, base: number, hit: boolean, asOfIdx = 0): Forecast => ({ asOfIdx, symbol: 'X', direction: 'bullish', q, base, hit });
+
+  it('reports a well-calibrated learner as calibrated, with positive skill', () => {
+    // Claims +10 over a 50% base, and hits 60% → exactly as claimed.
+    const fs = Array.from({ length: 1000 }, (_, i) => f(0.1, 0.5, i % 10 < 6));
+    const c = calibrate(fs, S);
+    expect(c.realized).toBeCloseTo(0.1, 12);
+    expect(c.predicted).toBeCloseTo(0.1, 12);
+    expect(c.skill!).toBeGreaterThan(0);
+  });
+
+  it('exposes overconfidence: claims edge, delivers none → negative skill', () => {
+    const fs = Array.from({ length: 1000 }, (_, i) => f(0.1, 0.5, i % 2 === 0));
+    const c = calibrate(fs, S);
+    expect(c.realized).toBeCloseTo(0, 12);
+    expect(c.skill!).toBeLessThan(0); // worse than just knowing the base rate
+  });
+
+  it('bins by claimed strength and tracks the trend by month', () => {
+    const fs = [
+      ...Array.from({ length: 10 }, () => f(0.02, 0.5, true, 0)),
+      ...Array.from({ length: 10 }, () => f(0.12, 0.5, false, 40)),
+    ];
+    const c = calibrate(fs, S);
+    expect(c.bins.map((b) => b.label)).toEqual(['1–3 pts', '10+ pts']);
+    expect(c.byMonth.map((m) => m.month)).toEqual(['2026-08', '2026-09']);
+    expect(c.byMonth[0]!.realized).toBeCloseTo(0.5, 12);
+    expect(c.byMonth[1]!.realized).toBeCloseTo(-0.5, 12);
+  });
+
+  it('is empty, not invented, with no forecasts', () => {
+    const c = calibrate([], S);
+    expect(c.n).toBe(0);
+    expect(c.skill).toBeNull();
+    expect(c.bins).toEqual([]);
+  });
+});
+
+describe('establishedCounts', () => {
+  it('counts a node as established once its own data carries ≥ half the weight', () => {
+    // 40 obs vs signal k=40 → evidence exactly 0.5 (established); ticker k=80 → 0.33 (not).
+    const book = buildEdgeBook(Array.from({ length: 40 }, () => ev()), 100, 'v', FLAT);
+    const c = establishedCounts(book);
+    expect(c.signal).toEqual({ established: 1, total: 1 });
+    expect(c.ticker).toEqual({ established: 0, total: 1 });
   });
 });

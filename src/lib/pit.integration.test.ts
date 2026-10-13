@@ -18,7 +18,8 @@ import { regimeConfigVersion } from './regime';
 import { getAnalyticsConfig } from './analytics-config';
 import { GET as regimeGET } from '@/app/api/accuracy/regime/route';
 import { GET as learningGET } from '@/app/api/learning/route';
-import { loadConvictionsIntoEngine, refreshEdgeBooks } from './learning-jobs';
+import { getLearningReport, loadConvictionsIntoEngine, refreshEdgeBooks } from './learning-jobs';
+import { GET as reportGET } from '@/app/api/learning/report/route';
 import { loadTrackRecord } from './learning-data';
 import { getFlowEngine } from './flow-engine';
 
@@ -50,12 +51,85 @@ async function wipe(): Promise<void> {
       { symbol: 'XLF', sector: 'ETF' },
       { symbol: 'XLK', sector: 'ETF' },
       { symbol: 'MSFT', sector: 'Technology' },
+      { symbol: 'GHOST', sector: 'Financials' }, // halted mid-history: price freezes
       // Delisted name: persisted with its sector, absent from the live universe.
       { symbol: 'DEADCO', sector: 'Financials' },
     ],
     skipDuplicates: true,
   });
 }
+
+/** 60-session learning history: AAPL hits 3/4, MSFT 1/2 (bullish pc_extreme), + tonight's pending signals. */
+async function seedLearningHistory(): Promise<{ days: Date[]; N: number; tv: string; rv: string }> {
+  const cfg = await getAnalyticsConfig();
+  const tv = thresholdVersion(cfg);
+  const rv = regimeConfigVersion({
+    volDeadband: cfg.regimeVolDeadband,
+    trendDeadbandPct: cfg.regimeTrendDeadbandPct,
+    gammaDeadbandFrac: cfg.regimeGammaDeadbandFrac,
+    persistDays: cfg.regimePersistDays,
+  });
+  const N = 60;
+  const days = weekdays(N);
+  const metrics = [];
+  for (let i = 0; i < N; i++) {
+    const row = (symbol: string, close: number, oi: boolean) => ({
+      symbol,
+      date: days[i]!,
+      close,
+      final: true,
+      historicalCloseOnly: false,
+      ...(oi ? { putOI: 1000, callOI: 1000 } : {}),
+    });
+    metrics.push(row('SPY', 500, false)); // flat market → excess = raw
+    metrics.push(row('XLK', 200, false));
+    // Oscillating names: 10-session forward returns change sign → base ≈ 50%.
+    metrics.push(row('AAPL', 100 + 5 * Math.sin(i / 3), true));
+    metrics.push(row('MSFT', 100 + 5 * Math.cos(i / 3), true));
+  }
+  await db.dailyMetric.createMany({ data: metrics });
+  await db.dailyRegime.createMany({
+    data: days.map((date) => ({ date, volState: 'pos', trendState: 'pos', gammaState: 'pos', regimeConfigVersion: rv, final: true })),
+  });
+  // 40 graded bullish pc_extreme signals each: AAPL hits 3 of 4, MSFT 1 of 2.
+  const sigs = [];
+  for (let i = 0; i < 40; i++) {
+    for (const [symbol, hit] of [['AAPL', i % 4 !== 0], ['MSFT', i % 2 === 0]] as const) {
+      sigs.push({
+        symbol,
+        firedOn: days[i]!,
+        signalType: 'pc_extreme',
+        direction: 'bullish',
+        thresholdVersion: tv,
+        regimeConfigVersion: rv,
+        regimeVol: 'pos',
+        regimeTrend: 'pos',
+        regimeGamma: 'pos',
+        scored: true,
+        fwd10ExSpy: hit ? 0.02 : -0.02,
+      });
+    }
+  }
+  // Tonight's signals: fired on the latest session, not graded yet.
+  for (const symbol of ['AAPL', 'MSFT']) {
+    sigs.push({
+      symbol,
+      firedOn: days[N - 1]!,
+      signalType: 'pc_extreme',
+      direction: 'bullish',
+      thresholdVersion: tv,
+      regimeConfigVersion: rv,
+      regimeVol: 'pos',
+      regimeTrend: 'pos',
+      regimeGamma: 'pos',
+      scored: false,
+      fwd10ExSpy: null as unknown as number,
+    });
+  }
+  await db.signalLog.createMany({ data: sigs });
+
+  return { days, N, tv, rv };
+  }
 
 describe.skipIf(!RUN)('PIT integration (RUN_DB_TESTS=1)', () => {
   beforeEach(wipe);
@@ -223,72 +297,7 @@ describe.skipIf(!RUN)('PIT integration (RUN_DB_TESTS=1)', () => {
   });
 
   it('(f): the edge book learns point-in-time, nightly and immutably', async () => {
-    const cfg = await getAnalyticsConfig();
-    const tv = thresholdVersion(cfg);
-    const rv = regimeConfigVersion({
-      volDeadband: cfg.regimeVolDeadband,
-      trendDeadbandPct: cfg.regimeTrendDeadbandPct,
-      gammaDeadbandFrac: cfg.regimeGammaDeadbandFrac,
-      persistDays: cfg.regimePersistDays,
-    });
-    const N = 60;
-    const days = weekdays(N);
-    const metrics = [];
-    for (let i = 0; i < N; i++) {
-      const row = (symbol: string, close: number, oi: boolean) => ({
-        symbol,
-        date: days[i]!,
-        close,
-        final: true,
-        historicalCloseOnly: false,
-        ...(oi ? { putOI: 1000, callOI: 1000 } : {}),
-      });
-      metrics.push(row('SPY', 500, false)); // flat market → excess = raw
-      metrics.push(row('XLK', 200, false));
-      // Oscillating names: 10-session forward returns change sign → base ≈ 50%.
-      metrics.push(row('AAPL', 100 + 5 * Math.sin(i / 3), true));
-      metrics.push(row('MSFT', 100 + 5 * Math.cos(i / 3), true));
-    }
-    await db.dailyMetric.createMany({ data: metrics });
-    await db.dailyRegime.createMany({
-      data: days.map((date) => ({ date, volState: 'pos', trendState: 'pos', gammaState: 'pos', regimeConfigVersion: rv, final: true })),
-    });
-    // 40 graded bullish pc_extreme signals each: AAPL hits 3 of 4, MSFT 1 of 2.
-    const sigs = [];
-    for (let i = 0; i < 40; i++) {
-      for (const [symbol, hit] of [['AAPL', i % 4 !== 0], ['MSFT', i % 2 === 0]] as const) {
-        sigs.push({
-          symbol,
-          firedOn: days[i]!,
-          signalType: 'pc_extreme',
-          direction: 'bullish',
-          thresholdVersion: tv,
-          regimeConfigVersion: rv,
-          regimeVol: 'pos',
-          regimeTrend: 'pos',
-          regimeGamma: 'pos',
-          scored: true,
-          fwd10ExSpy: hit ? 0.02 : -0.02,
-        });
-      }
-    }
-    // Tonight's signals: fired on the latest session, not graded yet.
-    for (const symbol of ['AAPL', 'MSFT']) {
-      sigs.push({
-        symbol,
-        firedOn: days[N - 1]!,
-        signalType: 'pc_extreme',
-        direction: 'bullish',
-        thresholdVersion: tv,
-        regimeConfigVersion: rv,
-        regimeVol: 'pos',
-        regimeTrend: 'pos',
-        regimeGamma: 'pos',
-        scored: false,
-        fwd10ExSpy: null as unknown as number,
-      });
-    }
-    await db.signalLog.createMany({ data: sigs });
+    const { days, N } = await seedLearningHistory();
 
     const res = await refreshEdgeBooks();
     // First outcome is knowable at session 10 (fired 0 + horizon 10) → books 10..59.
@@ -301,9 +310,16 @@ describe.skipIf(!RUN)('PIT integration (RUN_DB_TESTS=1)', () => {
     expect(latest.rowsUsed).toBe(80); // every signal's outcome known by session 59
     expect(latest.rowsUnbased).toBe(0); // cohort (XLK) base rates filled in
 
-    // Point-in-time: the book for session 20 knows only signals fired ≤ session 10.
+    // Point-in-time: the book for session 20 knows only signals fired ≤ session 10
+    // (22 of them) — and at that point the cohort's base rate rests on just 22
+    // knowable days, under MIN_BASE_SAMPLE, so they are unbased: skipped, not
+    // measured against noise.
     const at20 = books.find((b) => b.asOf.getTime() === days[20]!.getTime())!;
-    expect(at20.rowsUsed).toBe(22);
+    expect(at20.rowsUsed + at20.rowsUnbased).toBe(22);
+    expect(at20.rowsUsed).toBe(0);
+    // By session 30, 42 knowable base days → based; signals fired ≤ 20 count.
+    const at30b = books.find((b) => b.asOf.getTime() === days[30]!.getTime())!;
+    expect(at30b.rowsUsed).toBe(42);
 
     // It learned that AAPL's signals are better than MSFT's — but shrunk.
     const nodes = latest.nodes as Record<string, { n: number; excess: number; nEff: number }>;
@@ -351,6 +367,66 @@ describe.skipIf(!RUN)('PIT integration (RUN_DB_TESTS=1)', () => {
     expect(tr.learned[0]!.path[3]!.n).toBe(40);
     expect(tr.note).toBeNull();
     engine.setConvictions(new Map()); // leave the singleton clean
+  });
+
+  it('(g): self-grading replays past convictions point-in-time; frozen prices are excluded', async () => {
+    const { days, N, tv, rv } = await seedLearningHistory();
+    // GHOST trades normally, then its price freezes at 42 for the last 30 sessions
+    // (a halted name whose last snapshot kept being captured). Five "winning"
+    // signals fired during the freeze must not count as evidence.
+    await db.dailyMetric.createMany({
+      data: days.map((date, i) => ({
+        symbol: 'GHOST',
+        date,
+        close: i < 30 ? 40 + Math.sin(i) : 42,
+        putOI: 1000,
+        callOI: 1000,
+        final: true,
+        historicalCloseOnly: false,
+      })),
+    });
+    await db.signalLog.createMany({
+      data: [35, 36, 37, 38, 39].map((i) => ({
+        symbol: 'GHOST',
+        firedOn: days[i]!,
+        signalType: 'pc_extreme',
+        direction: 'bullish',
+        thresholdVersion: tv,
+        regimeConfigVersion: rv,
+        regimeVol: 'pos',
+        regimeTrend: 'pos',
+        regimeGamma: 'pos',
+        scored: true,
+        fwd10ExSpy: 0.02,
+      })),
+    });
+    await refreshEdgeBooks();
+
+    const r = (await getLearningReport())!;
+    expect(r.status.sessions.count).toBe(N);
+    expect(r.status.books.total).toBe(50);
+    expect(r.status.signals.graded).toBe(80); // AAPL + MSFT only
+    expect(r.status.signals.pending).toBe(2); // tonight's
+    expect(r.status.signals.excludedFrozen).toBe(5); // the ghost "wins"
+    expect(r.status.frozen.top).toEqual([expect.objectContaining({ symbol: 'GHOST', sessions: 30 })]);
+    expect(r.status.signals.nextMaturity! > days[N - 1]!.toISOString().slice(0, 10)).toBe(true);
+
+    // Self-grading: convictions formed on sessions 10..49 (once evidence existed and
+    // the outcome is now known), graded against what happened.
+    const c = r.selfGrade;
+    // Only sessions whose base rates rest on ≥ MIN_BASE_SAMPLE observations grade.
+    expect(c.n).toBeGreaterThan(20);
+    expect(c.n).toBeLessThanOrEqual(2 * 30); // ≤ two names × sessions 10..39 with signals
+    expect(c.hitRate).toBeGreaterThan(0.5); // AAPL's 75% dominates the bullish leans
+    expect(c.skill).not.toBeNull();
+    expect(c.byMonth.length).toBeGreaterThan(0);
+    expect(c.bins.reduce((s, b) => s + b.n, 0)).toBe(c.n);
+
+    // Cached: same object until a new book lands.
+    expect(await getLearningReport()).toBe(r);
+    // And served by the route.
+    const body = await (await reportGET()).json();
+    expect(body.selfGrade.n).toBe(c.n);
   });
 
   it('(c): ?demo=1 is refused (403) under NODE_ENV=production', async () => {

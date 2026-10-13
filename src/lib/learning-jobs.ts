@@ -15,14 +15,20 @@ import { Prisma } from '@prisma/client';
 import { getAnalyticsConfig } from './analytics-config';
 import { tryDb } from './db';
 import type { FlowEngine } from './flow-engine';
+import { establishedCounts, type Calibration, type Level } from './learning';
 import {
+  baseRateSweep,
   bookAt,
+  bookFromRow,
   convictionsAt,
   currentLearningVersion,
   loadLearningInputs,
   parseConvictions,
+  selfGrade,
   serializeConvictions,
+  type FrozenRun,
 } from './learning-data';
+import { isTradingDay } from './trading-calendar';
 
 /** Upper bound on books reconstructed in one run (one trading year). */
 const MAX_BACKFILL_BOOKS = 252;
@@ -53,9 +59,10 @@ export async function refreshEdgeBooks(): Promise<RefreshResult | null> {
 
     let written = 0;
     let reconstructed = 0;
+    const sweep = baseRateSweep(inputs); // one forward pass for the whole backfill
     for (let a = Math.max(0, start); a <= lastIdx; a++) {
       if (have.has(sessions[a]!)) continue;
-      const book = bookAt(inputs, a);
+      const book = bookAt(inputs, a, sweep.advanceTo(a).lookup);
       const isReconstruction = a < lastIdx;
       try {
         await db.edgeBook.create({
@@ -100,4 +107,105 @@ export async function loadConvictionsIntoEngine(engine: FlowEngine): Promise<num
     return engine.setConvictions(parseConvictions(latest.convictions, latest.asOf.toISOString().slice(0, 10)));
   });
   return touched?.length ?? 0;
+}
+
+export interface LearningReport {
+  version: string;
+  generatedAt: string;
+  status: {
+    sessions: { first: string; last: string; count: number };
+    books: { total: number; live: number; reconstructed: number; latestAsOf: string | null };
+    signals: {
+      /** Single-name directional signals under the current definitions. */
+      logged: number;
+      /** Graded and usable as evidence. */
+      graded: number;
+      /** Window still open. */
+      pending: number;
+      /** Graded, but no base rate could be established (skipped, not guessed). */
+      unbased: number;
+      /** Skipped because they fired on, or were graded against, a frozen price. */
+      excludedFrozen: number;
+      /** Session the next pending signal's outcome becomes knowable (projected). */
+      nextMaturity: string | null;
+    };
+    established: Record<Level, { established: number; total: number }> | null;
+    frozen: { names: number; top: FrozenRun[] };
+  };
+  selfGrade: Calibration;
+}
+
+let reportCache: { key: string; at: number; report: LearningReport } | null = null;
+const REPORT_TTL_MS = 30 * 60_000;
+
+/**
+ * Everything the learning page shows. Self-grading replays every past session
+ * point-in-time, so the report is cached in memory for 30 minutes and keyed to
+ * the latest book — a new nightly book invalidates it immediately.
+ */
+export async function getLearningReport(): Promise<LearningReport | null> {
+  return tryDb('learning report', async (db) => {
+    const cfg = await getAnalyticsConfig();
+    const version = currentLearningVersion(cfg);
+    const latest = await db.edgeBook.findFirst({ where: { version }, orderBy: { asOf: 'desc' } });
+    const key = `${version}|${latest?.asOf.toISOString() ?? 'none'}`;
+    if (reportCache && reportCache.key === key && Date.now() - reportCache.at < REPORT_TTL_MS) return reportCache.report;
+
+    const inputs = await loadLearningInputs(db, undefined, cfg);
+    if (!inputs) return null;
+    const H = inputs.params.horizon;
+    const { sessions } = inputs;
+    const lastIdx = sessions.length - 1;
+
+    let logged = 0;
+    let pending = 0;
+    let nextMaturityIdx = Infinity;
+    for (const [idx, list] of inputs.activeBySession) {
+      for (const s of list) {
+        logged += 1;
+        if (!s.scored) {
+          pending += 1;
+          nextMaturityIdx = Math.min(nextMaturityIdx, idx + H);
+        }
+      }
+    }
+    const [total, live] = await Promise.all([
+      db.edgeBook.count({ where: { version } }),
+      db.edgeBook.count({ where: { version, reconstructed: false } }),
+    ]);
+
+    const report: LearningReport = {
+      version,
+      generatedAt: new Date().toISOString(),
+      status: {
+        sessions: { first: sessions[0] ?? '', last: sessions[lastIdx] ?? '', count: sessions.length },
+        books: { total, live, reconstructed: total - live, latestAsOf: latest ? latest.asOf.toISOString().slice(0, 10) : null },
+        signals: {
+          logged,
+          graded: inputs.evidence.length,
+          pending,
+          unbased: latest?.rowsUnbased ?? 0,
+          excludedFrozen: inputs.excludedFrozen,
+          nextMaturity: Number.isFinite(nextMaturityIdx) ? projectSession(sessions, nextMaturityIdx) : null,
+        },
+        established: latest ? establishedCounts(bookFromRow(latest)) : null,
+        frozen: { names: inputs.frozen.length, top: inputs.frozen.slice(0, 10) },
+      },
+      selfGrade: selfGrade(inputs).calibration,
+    };
+    reportCache = { key, at: Date.now(), report };
+    return report;
+  });
+}
+
+/** Session index → ET date, projecting past the last known session on the trading calendar. */
+function projectSession(sessions: readonly string[], idx: number): string {
+  if (idx < sessions.length) return sessions[idx]!;
+  const d = new Date(`${sessions[sessions.length - 1]}T00:00:00Z`);
+  let left = idx - (sessions.length - 1);
+  while (left > 0) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    if (isTradingDay(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate())) left -= 1;
+  }
+  return d.toISOString().slice(0, 10);
 }
