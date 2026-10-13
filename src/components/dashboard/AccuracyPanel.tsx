@@ -5,6 +5,7 @@
  * implied direction (put-heavy = bearish, call-heavy = bullish) matched the
  * underlying's move the next day, per severity level.
  */
+import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn, formatTime } from '@/lib/utils';
@@ -110,9 +111,9 @@ export function AccuracyPanel(): JSX.Element {
         {data.recent.map((r, i) => (
           <li key={i} className="flex items-center gap-2 border-t border-surface-border/40 py-1.5">
             <span className={cn('text-[10px]', r.hit ? 'text-bullish' : 'text-bearish')}>{r.hit ? '✓' : '✗'}</span>
-            <a href={`/ticker/${r.symbol}`} className="font-semibold text-slate-200 hover:text-blue-400">
+            <Link href={`/ticker/${r.symbol}`} prefetch={false} className="font-semibold text-slate-200 hover:text-blue-400">
               {r.symbol}
-            </a>
+            </Link>
             <span className="text-slate-500">{r.direction}</span>
             <span className={cn('ml-auto tnum', r.moveNextDay >= 0 ? 'text-bullish' : 'text-bearish')}>
               {r.moveNextDay >= 0 ? '+' : ''}

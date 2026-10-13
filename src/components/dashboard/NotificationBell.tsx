@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
 import { useAlerts } from '@/hooks/useAlerts';
 import { SpikeBadge } from '@/components/ui/badge';
@@ -35,14 +36,20 @@ export function NotificationBell(): JSX.Element {
             <p className="py-6 text-center text-xs text-slate-500">No notifications.</p>
           ) : (
             alerts.slice(0, 30).map((a) => (
-              <a key={a.id} href={`/ticker/${a.symbol}`} className="block border-b border-surface-border/50 px-3 py-2 hover:bg-surface-overlay/40">
+              <Link
+                key={a.id}
+                href={`/ticker/${a.symbol}`}
+                prefetch={false}
+                onClick={() => setOpen(false)}
+                className="block border-b border-surface-border/50 px-3 py-2 hover:bg-surface-overlay/40"
+              >
                 <div className="flex items-center gap-2 text-xs">
                   <span className="font-semibold text-slate-100">{a.symbol}</span>
                   <SpikeBadge level={a.level} />
                   <span className="ml-auto text-[10px] text-slate-500 tnum">{formatTime(a.createdAt)}</span>
                 </div>
                 <p className="mt-0.5 text-[11px] text-slate-400">{a.message}</p>
-              </a>
+              </Link>
             ))
           )}
         </div>

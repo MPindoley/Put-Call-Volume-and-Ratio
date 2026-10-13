@@ -4,6 +4,7 @@
  * Spike alert feed + transient toasts for high-severity events. Alerts arrive
  * over the socket the moment the detector confirms a spike.
  */
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { Card, CardHeader } from '@/components/ui/card';
 import { SpikeBadge } from '@/components/ui/badge';
@@ -21,7 +22,7 @@ export function AlertFeed({ embedded = false }: { embedded?: boolean }): JSX.Ele
       <ul>
         {alerts.map((a) => (
           <li key={a.id} className="border-b border-surface-border/50 px-3 py-2 hover:bg-surface-overlay/40">
-            <a href={`/ticker/${a.symbol}`} className="block">
+            <Link href={`/ticker/${a.symbol}`} prefetch={false} className="block">
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-slate-100">{a.symbol}</span>
                 <SpikeBadge level={a.level} />
@@ -31,7 +32,7 @@ export function AlertFeed({ embedded = false }: { embedded?: boolean }): JSX.Ele
               <p className="mt-0.5 text-[10px] text-slate-500 tnum">
                 {formatCompact(a.contracts)} contracts · {formatPremium(a.premium)} premium
               </p>
-            </a>
+            </Link>
           </li>
         ))}
       </ul>
@@ -64,9 +65,10 @@ export function AlertToasts(): JSX.Element {
   return (
     <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2" aria-live="polite">
       {visible.map((a) => (
-        <a
+        <Link
           key={a.id}
           href={`/ticker/${a.symbol}`}
+          prefetch={false}
           className={cn(
             'pointer-events-auto w-72 rounded-lg border bg-surface-raised p-3 shadow-xl',
             a.level === 'extreme' ? 'border-bearish/60' : 'border-severe/60',
@@ -77,7 +79,7 @@ export function AlertToasts(): JSX.Element {
             <SpikeBadge level={a.level} />
           </div>
           <p className="mt-1 text-[11px] text-slate-400">{a.message}</p>
-        </a>
+        </Link>
       ))}
     </div>
   );

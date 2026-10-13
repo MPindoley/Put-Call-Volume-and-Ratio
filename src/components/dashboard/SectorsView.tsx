@@ -10,6 +10,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardHeader } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { PageHeader } from '@/components/shell/PageHeader';
 import { cn } from '@/lib/utils';
 import type { SectorDispersion } from '@/types';
 
@@ -29,19 +30,20 @@ export function SectorsView(): JSX.Element {
   });
 
   return (
-    <div className="mx-auto max-w-5xl p-4">
-      <a href="/" className="text-xs text-slate-500 hover:text-slate-300">
-        ← Back to dashboard
-      </a>
-      <h1 className="mt-2 text-2xl font-bold text-slate-100">Cohort Health</h1>
-      <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-500">
-        Each peer cohort is keyed by its benchmark ETF. Names overridden to an industry ETF
-        (semis → SMH, biotech → XBI) belong to that cohort only and leave their GICS sector
-        median — one name, one peer group. The <strong>IV dispersion proxy</strong> is benchmark
-        IV ÷ weighted-average member IV (a proxy, not implied correlation). Member <strong>count</strong>{' '}
-        and member-IV <strong>IQR</strong> are the health signals: a moving spread with a stable
-        cohort means the name moved; a shifting count/IQR means the cohort itself changed.
-      </p>
+    <div className="mx-auto max-w-6xl p-4 lg:p-6">
+      <PageHeader
+        title="Cohort health"
+        description={
+          <>
+            Each peer cohort is keyed by its benchmark ETF. Names overridden to an industry ETF (semis → SMH, biotech → XBI)
+            belong to that cohort only and leave their GICS sector median — one name, one peer group. The{' '}
+            <strong className="text-slate-300">IV dispersion proxy</strong> is benchmark IV ÷ weighted-average member IV (a proxy,
+            not implied correlation). Member <strong className="text-slate-300">count</strong> and member-IV{' '}
+            <strong className="text-slate-300">IQR</strong> are the health signals: a moving spread with a stable cohort means the
+            name moved; a shifting count/IQR means the cohort itself changed.
+          </>
+        }
+      />
 
       <Card className="mt-4">
         <CardHeader title="Cohorts" />

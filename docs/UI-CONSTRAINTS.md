@@ -41,28 +41,53 @@ the two named gaps have been implemented to match.
    rather than borrowing the delayed chain price, and a quote older than 3
    minutes dims to slate instead of implying it is current. A price that claims
    to be live and is not is worse than no price.
-5. **Sort, filter, pin, flash.** Columns are sortable; sector/flow filters and a
-   ticker search narrow the set; pinned tickers stay on top; a row flashes briefly
-   on a significant net-flow change and then settles.
+5. **Sort, filter, pin, flash.** Columns are sortable; sector/flow filters and the
+   top-bar ticker search narrow the set (an active search shows as a removable
+   chip in the table toolbar, so a filtered table never passes for the full one);
+   pinned tickers stay on top; a row flashes briefly on a significant net-flow
+   change and then settles.
+5a. **Columns fit the width; they never push the page sideways.** The budget
+   above is the full set. When the table is narrower than all of it, columns
+   drop in a fixed order, least important first — Updated, P/C 30m, zSkew90,
+   Puts 5m + Calls 5m (as a pair), Prem 5m, IVR, OI P/C, zSkew30, Skew
+   (`src/lib/table-columns.ts`, unit-tested). Ticker, Last, Conv, P/C, Net Flow,
+   IV30 and Unusual never drop automatically. The Columns menu lets a user hide
+   any column except Ticker (remembered per browser) and marks the ones dropped
+   for lack of room. Rows are 32px.
 
 ## Navigation & deep links
 
 6. Every ticker is a **deep link**: `/ticker/{SYMBOL}` renders that name's detail
-   (volatility & positioning, sector-relative, event gauge, idiosyncratic feed,
-   stored history). Ticker cells in the scan table and in panels link to it.
-7. The right column is **tabbed** (Alerts / Accuracy / Regime / Leaders); the
-   Regime tab additionally honours `?demo=1` (guarded — see METRICS.md).
-8. `/sectors` is the cohort/sector overview. Back-links return to the scan.
+   (volatility & positioning, sector-relative, track record, event gauge,
+   idiosyncratic feed, stored history). Ticker cells in the scan table and in
+   panels link to it. The ticker page has a sticky header — breadcrumb
+   (Scanner › sector › symbol; the sector filters the scanner), live price,
+   learned lean, P/C, unusual activity, IV — and a section jump bar.
+7. The scanner's side panel is **tabbed** (Market / Alerts / Regime / Leaders /
+   Accuracy), collapsible, and remembers its tab and open state per browser.
+   Market holds the detail behind the one-row market strip (intraday ratio vs
+   SPY, sector ratios, IV-dispersion proxy, most-active heatmap). The Regime tab
+   additionally honours `?demo=1` (guarded — see METRICS.md).
+8. **One app shell on every page** (`src/components/shell/AppShell.tsx`): a top
+   bar with the primary nav (Scanner `/`, Cohorts `/sectors`, Learning
+   `/learning`) showing the current page, the ticker search, the data-status
+   pill (fresh/stale, market session, feed — simulated data is always labelled),
+   notifications and settings; a slim status footer (stream vs polling fallback,
+   API budget, DB, shortcuts, CSV export). The shell owns the socket, snapshot,
+   toasts and shortcuts, and links navigate client-side so the live stream
+   survives page changes. No page carries its own back-link.
 
 ## Keyboard shortcuts
 
-A global handler (mounted once in `Dashboard`) provides:
+A global handler (mounted once in the app shell, so it works on every page) provides:
 
 | Key | Action |
 |-----|--------|
 | `/` | focus the ticker search box |
+| `↑` / `↓` | move through search matches |
+| `Enter` | open the highlighted ticker |
 | `Esc` | clear + blur the search box |
-| `?` | toggle the keyboard-shortcuts help overlay |
+| `?` | toggle the keyboard-shortcuts help overlay (also the footer's "Shortcuts") |
 
 Shortcuts are suppressed while typing in an input/textarea (except `Esc`).
 *(Gap fixed this review — there was no global handler before.)*
