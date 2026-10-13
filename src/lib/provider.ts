@@ -33,6 +33,12 @@ export interface OptionsChainAggregate {
   contracts?: RawContract[];
   /** Pre-computed analytics (simulator only; live providers pass contracts). */
   analytics?: ChainAnalytics;
+  /**
+   * Epoch ms of the market moment this snapshot reflects, when the provider
+   * says (a delayed feed's snapshot time minus its delay). Absent = treat the
+   * fetch time as the data time.
+   */
+  asOf?: number;
 }
 
 export interface OptionsDataProvider {

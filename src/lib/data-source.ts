@@ -20,7 +20,8 @@ export function getDataProvider(): OptionsDataProvider | null {
       );
       break;
     case 'cboe':
-      provider = new CboeClient(Number(process.env.CBOE_RPM ?? 60));
+      // 90/min: measured headroom below the CDN's ~180/min 429 onset (see .env.example).
+      provider = new CboeClient(Number(process.env.CBOE_RPM ?? 90));
       break;
     case 'demo':
       provider = null;
@@ -33,5 +34,6 @@ export function getDataProvider(): OptionsDataProvider | null {
 export function apiStats(): { provider: string; callsLastMinute: number; perMinute: number } {
   const p = getDataProvider();
   if (!p) return { provider: 'simulator', callsLastMinute: 0, perMinute: 0 };
-  return { provider: p.name, callsLastMinute: p.bucket.callsLastMinute(), perMinute: p.bucket.perMinute };
+  // The rate currently allowed (below the configured ceiling for a while after a 429).
+  return { provider: p.name, callsLastMinute: p.bucket.callsLastMinute(), perMinute: p.bucket.currentPerMinute };
 }

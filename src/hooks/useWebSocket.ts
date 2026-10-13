@@ -44,6 +44,7 @@ export function useWebSocket(): { connected: boolean } {
     s.on('connect', onConnect);
     s.on('disconnect', onDisconnect);
     s.on('flow-update', store.applyFlowUpdate);
+    s.on('quote-update', store.applyQuoteUpdate);
     s.on('ratio-update', store.applyRatioUpdate);
     s.on('connection-status', store.applyStatus);
     s.on('spike-alert', store.pushAlert);
@@ -54,6 +55,7 @@ export function useWebSocket(): { connected: boolean } {
       s.off('connect', onConnect);
       s.off('disconnect', onDisconnect);
       s.off('flow-update', store.applyFlowUpdate);
+      s.off('quote-update', store.applyQuoteUpdate);
       s.off('ratio-update', store.applyRatioUpdate);
       s.off('connection-status', store.applyStatus);
       s.off('spike-alert', store.pushAlert);

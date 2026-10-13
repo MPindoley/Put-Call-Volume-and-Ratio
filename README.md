@@ -51,8 +51,11 @@ npm run dev                       # http://localhost:3000
 - **CBOE (free)** pulls full option chains from CBOE's public delayed-quotes
   CDN. 15-minute delay means spike alerts land ~15 minutes behind the tape —
   fine for ratio context, session flow and swing entries; not for scalping.
-  `CBOE_RPM=60` refreshes a 250-ticker universe about every 4 minutes, with
-  watchlist/spiking names prioritized.
+  `CBOE_RPM=90` (default) covers the ~1,400-name universe on a tiered
+  schedule: watchlist, spiking, benchmark and the ~100 busiest names about
+  every 3 minutes, the next 300 about every 11, the quiet rest about every 32.
+  Short-window figures ("Puts 5m" etc.) are per-5-minute rates measured on the
+  data's own clock, and every row shows the market time its data reflects.
 - **Massive.com is Polygon.io** — the company renamed in October 2025; same
   API, keys and pricing (`api.polygon.io` and `api.massive.com` both work).
   Real-time options snapshots require a paid options plan; set `MASSIVE_RPM`
@@ -186,10 +189,22 @@ flow) works with or without a database.
 
 ## Extending the universe
 
-Edit `src/lib/universe.ts` — add symbols under their GICS sector and raise
-`MAX_TICKERS`, then run `node scripts/validate-universe.mjs` to confirm every
-symbol resolves on the CBOE feed. Everything downstream (polling, ratios,
-heatmap, filters) follows automatically.
+The universe is the hand-curated core in `src/lib/universe.ts` (~540 names)
+plus a generated extension, `src/lib/universe-extended.ts` (~860 names chosen
+by measured options open interest). To refresh the extension as liquidity
+shifts (every few months):
+
+```bash
+node scripts/build-universe.mjs --refresh          # default --target 1400
+```
+
+It downloads CBOE's list of optionable symbols and Nasdaq's sector data,
+measures each candidate's option chain on the CBOE feed (~15 minutes at a
+polite 3 requests/second), and rewrites the extension. To add a name by hand,
+put it under its GICS sector in `universe.ts` and run
+`node scripts/validate-universe.mjs`. `MAX_TICKERS` optionally caps the set
+(core first). Everything downstream (polling, ratios, heatmap, filters)
+follows automatically.
 
 ## Deployment (Railway, single service)
 

@@ -39,11 +39,15 @@ const COLUMN_META: Record<ColumnId, { sort: SortKey | null; align: 'left' | 'rig
     title:
       "Learned conviction: this name's signals from the latest session, each weighted by how well that signal has ACTUALLY worked — hit-rate points above the no-skill base rate, shrunk toward zero on thin evidence. \"—\" = no signal, or not enough evidence to say",
   },
-  putCallRatio: { sort: 'putCallRatio', align: 'right', title: 'Put/call volume ratio, last 5 minutes' },
-  putVolume: { sort: 'putVolume', align: 'right', title: 'Put contracts traded, last 5 minutes' },
-  callVolume: { sort: 'callVolume', align: 'right', title: 'Call contracts traded, last 5 minutes' },
-  netFlow: { sort: 'netFlow', align: 'right', title: 'Calls minus puts, last 5 minutes' },
-  premium: { sort: 'premium', align: 'right', title: 'Option premium traded, last 5 minutes' },
+  putCallRatio: {
+    sort: 'putCallRatio',
+    align: 'right',
+    title: 'Put/call volume ratio over the latest ~5 minutes of data (the session ratio until two snapshots exist)',
+  },
+  putVolume: { sort: 'putVolume', align: 'right', title: 'Put contracts per 5 minutes, measured over the latest data. A rate, so names refreshed at different speeds compare; hover a cell for the minutes it was measured over' },
+  callVolume: { sort: 'callVolume', align: 'right', title: 'Call contracts per 5 minutes, measured over the latest data. A rate, so names refreshed at different speeds compare; hover a cell for the minutes it was measured over' },
+  netFlow: { sort: 'netFlow', align: 'right', title: 'Calls minus puts, per 5 minutes (measured over the latest data)' },
+  premium: { sort: 'premium', align: 'right', title: 'Option premium traded per 5 minutes (measured over the latest data)' },
   iv30: { sort: 'iv30', align: 'right', title: '30-day implied volatility (with day change)' },
   ivRank: { sort: 'ivRank', align: 'right', title: 'IV rank: percentile of IV30 vs stored history' },
   rrSkew: {
@@ -60,7 +64,11 @@ const COLUMN_META: Record<ColumnId, { sort: SortKey | null; align: 'left' | 'rig
   skewZ90: { sort: 'skewZ90', align: 'right', title: 'Sector-relative skew z-score, 90-day window' },
   spikeScore: { sort: 'spikeScore', align: 'left', title: 'Unusual-activity level and score (0–100)' },
   sparkline: { sort: null, align: 'left', title: 'Put/call ratio over the last 30 minutes' },
-  lastUpdated: { sort: 'lastUpdated', align: 'right' },
+  lastUpdated: {
+    sort: 'lastUpdated',
+    align: 'right',
+    title: 'Market time the option data reflects (ET). The free feed runs 15 minutes behind; dimmed when a row is much older than that',
+  },
 };
 
 const DEF_BY_ID = new Map(COLUMN_DEFS.map((c) => [c.id, c]));
@@ -203,7 +211,43 @@ function TickerCell({ row, pinned }: { row: TickerFlow; pinned: boolean }): JSX.
   );
 }
 
+/** A row whose data is this far behind the clock is older than the feed's normal lag and is dimmed. */
+const DATA_STALE_MS = 35 * 60_000;
+
+function windowTitle(row: TickerFlow): string {
+  if (row.flowWindowMs === null) return 'Not enough data yet for a 5-minute rate (needs two snapshots at least a minute apart)';
+  const mins = row.flowWindowMs / 60_000;
+  return `Rate per 5 minutes, measured over ${mins.toFixed(mins < 10 ? 1 : 0)} min of data ending ${formatTime(row.dataAsOf)} ET`;
+}
+
+/** Market time of the row's option data, aged against the clock (UI-CONSTRAINTS §4: old data dims, never alarms). */
+function AsOfCell({ row }: { row: TickerFlow }): JSX.Element {
+  if (row.dataAsOf <= 0) return <span className="tnum text-slate-600">—</span>;
+  const ageMin = Math.max(0, Math.round((Date.now() - row.dataAsOf) / 60_000));
+  const stale = Date.now() - row.dataAsOf > DATA_STALE_MS;
+  return (
+    <span
+      className={cn('tnum', stale ? 'text-slate-600' : 'text-slate-500')}
+      title={`Option data as of ${formatTime(row.dataAsOf)} ET (${ageMin} min ago) · fetched ${formatTime(row.lastUpdated)} ET`}
+    >
+      {formatTime(row.dataAsOf)}
+    </span>
+  );
+}
+
+/** The 5-minute columns before a rate exists: absence, styled as absence (§4) — never a misleading 0. */
+function NotMeasured({ row }: { row: TickerFlow }): JSX.Element {
+  return (
+    <span className="tnum text-slate-600" title={windowTitle(row)}>
+      —
+    </span>
+  );
+}
+
+const WINDOW_COLUMNS = new Set<ColumnId>(['putVolume', 'callVolume', 'netFlow', 'premium']);
+
 function CellContent({ id, row, pinned }: { id: ColumnId; row: TickerFlow; pinned: boolean }): JSX.Element {
+  if (WINDOW_COLUMNS.has(id) && row.flowWindowMs === null) return <NotMeasured row={row} />;
   switch (id) {
     case 'symbol':
       return <TickerCell row={row} pinned={pinned} />;
@@ -218,9 +262,17 @@ function CellContent({ id, row, pinned }: { id: ColumnId; row: TickerFlow; pinne
         </span>
       );
     case 'putVolume':
-      return <span className="tnum text-slate-300">{formatCompact(row.putVolume)}</span>;
+      return (
+        <span className="tnum text-slate-300" title={windowTitle(row)}>
+          {formatCompact(row.putVolume)}
+        </span>
+      );
     case 'callVolume':
-      return <span className="tnum text-slate-300">{formatCompact(row.callVolume)}</span>;
+      return (
+        <span className="tnum text-slate-300" title={windowTitle(row)}>
+          {formatCompact(row.callVolume)}
+        </span>
+      );
     case 'netFlow':
       return (
         <span className={cn('tnum', row.netFlow > 0 ? 'text-bullish' : row.netFlow < 0 ? 'text-bearish' : 'text-slate-500')}>
@@ -285,7 +337,7 @@ function CellContent({ id, row, pinned }: { id: ColumnId; row: TickerFlow; pinne
     case 'sparkline':
       return <Sparkline points={row.ratioSparkline} />;
     case 'lastUpdated':
-      return <span className="tnum text-slate-500">{row.lastUpdated > 0 ? formatTime(row.lastUpdated) : '—'}</span>;
+      return <AsOfCell row={row} />;
   }
 }
 

@@ -25,28 +25,37 @@ import { loadInstrumentConfigs } from './interpretation';
 import { backfillRegimeHistory } from './regime-jobs';
 import { loadConvictionsIntoEngine } from './learning-jobs';
 import { loadLatestIntoEngine } from './sector-analytics';
-import { getQuoteClient, type QuoteClient } from './quotes';
+import { getQuoteClient, pickQuoteSymbols, type QuoteClient } from './quotes';
 import { FlowSimulator } from './simulator';
 import { isTradingDayNow } from './trading-calendar';
-import { TRACKED_UNIVERSE } from './universe';
+import { planRefresh, type RefreshCandidate } from './refresh-schedule';
+import { BENCHMARKS, TRACKED_UNIVERSE } from './universe';
 import { isMarketHours } from './utils';
 import { tryDb, dbAvailable } from './db';
-import type { ServerToClientEvents, ClientToServerEvents, TickerFlow } from '@/types';
+import type { ServerToClientEvents, ClientToServerEvents, QuoteTick, TickerFlow } from '@/types';
 
 type IO = Server<ClientToServerEvents, ServerToClientEvents>;
 
 const CONCURRENCY = 10;
+const BENCHMARK_SYMBOLS = new Set(BENCHMARKS.map((b) => b.symbol));
 
 export class Poller {
   private engine: FlowEngine;
   private simulator = new FlowSimulator();
+  /** Last fetch ATTEMPT per symbol (successful or not), for scheduling. */
   private lastFetched = new Map<string, number>();
+  /** Last recorded session option volume per symbol (DB), to rank names before today's first fetch. */
+  private priorActivity = new Map<string, number>();
   private running = false;
   private quoting = false;
+  private lastFullQuoteSweep = 0;
   private quotes: QuoteClient | null = getQuoteClient();
   private quoteTask: cron.ScheduledTask | null = null;
   private marketWasOpen: boolean | null = null;
-  private task: cron.ScheduledTask | null = null;
+  private loopTimer: NodeJS.Timeout | null = null;
+  private stopped = false;
+  /** When polling began; never-fetched names count as due since then (refresh-schedule.ts). */
+  private startedAt = Date.now();
   private maintenanceTask: cron.ScheduledTask | null = null;
   private eodTask: cron.ScheduledTask | null = null;
   private edgarTask: cron.ScheduledTask | null = null;
@@ -56,6 +65,7 @@ export class Poller {
   }
 
   start(): void {
+    this.startedAt = Date.now();
     const intervalSec = Math.max(15, Number(process.env.POLL_INTERVAL_SEC ?? 30));
     const provider = getDataProvider();
     this.engine.mode = provider ? 'live' : 'simulated';
@@ -78,15 +88,24 @@ export class Poller {
     // firing it the instant the port opens can still starve the platform's
     // first healthcheck and get the deploy killed.
     const warmupMs = Math.max(0, Number(process.env.POLL_WARMUP_MS ?? 8_000));
-    setTimeout(() => void this.cycle(), warmupMs).unref();
-    this.task = cron.schedule(`*/${intervalSec} * * * * *`, () => void this.cycle());
+    // Cycles run back to back (next one starts when this one ends, or at the
+    // interval if it ended early) rather than on a fixed cron tick. A cycle's
+    // batch is one interval's worth of rate budget, and the token bucket paces
+    // it at exactly that rate, so a cycle always runs slightly OVER the
+    // interval; on a fixed tick the next tick then found it still running and
+    // was skipped, idling the budget for a whole interval — measured at roughly
+    // half the configured request rate actually used.
+    this.loopTimer = setTimeout(() => void this.loop(intervalSec * 1000), warmupMs);
 
-    // Live-quote sweep on its own, much faster cadence. It covers the WHOLE
-    // universe every pass (~28 batched requests, ~580 KB) instead of rotating,
-    // so price freshness is independent of the ~9-minute chain rotation.
+    // Live-quote sweep on its own, much faster cadence: the hot set every pass,
+    // the whole universe every few minutes (see quoteCycle), so price freshness
+    // is independent of the chain rotation.
     if (this.quotes) {
       const quoteSec = Math.max(15, Number(process.env.QUOTE_INTERVAL_SEC ?? 60));
-      console.log(`[poller] live quotes: ${this.quotes.name}, every ${quoteSec}s, ${TRACKED_UNIVERSE.length} symbols`);
+      console.log(
+        `[poller] live quotes: ${this.quotes.name}, hot set every ${quoteSec}s, all ${TRACKED_UNIVERSE.length} symbols every ` +
+          `${Math.max(60, Number(process.env.QUOTE_FULL_SWEEP_SEC ?? 300))}s`,
+      );
       // Staggered after the chain warmup so the two sweeps do not both land
       // on top of the healthcheck window.
       setTimeout(() => void this.quoteCycle(), warmupMs + 2_000).unref();
@@ -103,18 +122,40 @@ export class Poller {
   }
 
   /**
-   * Sweep live underlying prices for the whole universe and push the deltas.
-   * Deliberately independent of cycle(): it must not wait on the chain
-   * rotation, and a quote failure must not disturb chain polling (or vice
-   * versa). Idles outside trading hours on the same rule as cycle().
+   * Sweep live underlying prices and push them as compact ticks. Every pass
+   * covers the hot set (benchmarks, watchlist, most active names); the whole
+   * universe is covered every QUOTE_FULL_SWEEP_SEC (pickQuoteSymbols). Kept
+   * independent of cycle(): it must not wait on the chain rotation, and a quote
+   * failure must not disturb chain polling (or vice versa). Idles outside
+   * trading hours on the same rule as cycle().
    */
   private async quoteCycle(): Promise<void> {
     if (!this.quotes || this.quoting || this.shouldIdle()) return;
     this.quoting = true;
     try {
-      const quotes = await this.quotes.fetchAll(TRACKED_UNIVERSE.map((u) => u.symbol));
+      const now = Date.now();
+      const watch = new Set(this.engine.settings.watchlist);
+      const { symbols, full } = pickQuoteSymbols({
+        universe: TRACKED_UNIVERSE.map((u) => u.symbol),
+        activity: (s) => {
+          const f = this.engine.getFlow(s);
+          return f && f.lastUpdated > 0 ? f.sessionPutVolume + f.sessionCallVolume : (this.priorActivity.get(s) ?? 0);
+        },
+        always: new Set([...BENCHMARK_SYMBOLS, ...watch]),
+        hotCount: Math.max(0, Number(process.env.QUOTE_HOT_SYMBOLS ?? 300)),
+        now,
+        lastFullSweepAt: this.lastFullQuoteSweep,
+        fullEveryMs: Math.max(60, Number(process.env.QUOTE_FULL_SWEEP_SEC ?? 300)) * 1000,
+      });
+      if (full) this.lastFullQuoteSweep = now;
+      const quotes = await this.quotes.fetchAll(symbols);
       const touched = this.engine.applyQuotes(quotes);
-      if (this.io && touched.length > 0) this.io.emit('flow-update', touched);
+      if (this.io && touched.length > 0) {
+        this.io.emit(
+          'quote-update',
+          touched.map((f): QuoteTick => [f.symbol, f.livePrice ?? 0, f.livePriceChangePct, f.livePriceAt ?? 0]),
+        );
+      }
       if (this.quotes.lastErrors > 0) {
         console.warn(`[poller] quote sweep: ${this.quotes.lastErrors} batch(es) failed, ${quotes.length} quotes applied`);
       }
@@ -125,8 +166,17 @@ export class Poller {
     }
   }
 
+  private async loop(intervalMs: number): Promise<void> {
+    if (this.stopped) return;
+    const startedAt = Date.now();
+    await this.cycle();
+    if (this.stopped) return;
+    this.loopTimer = setTimeout(() => void this.loop(intervalMs), Math.max(0, intervalMs - (Date.now() - startedAt)));
+  }
+
   stop(): void {
-    this.task?.stop();
+    this.stopped = true;
+    if (this.loopTimer) clearTimeout(this.loopTimer);
     this.quoteTask?.stop();
     this.maintenanceTask?.stop();
     this.eodTask?.stop();
@@ -168,6 +218,15 @@ export class Poller {
         });
       }
       console.log(`[poller] loaded ${baselines.length} stored baselines`);
+    });
+    await tryDb('load prior activity', async (db) => {
+      const rows = await db.dailyMetric.findMany({
+        where: { optVolume: { not: null } },
+        orderBy: [{ symbol: 'asc' }, { date: 'desc' }],
+        distinct: ['symbol'],
+        select: { symbol: true, optVolume: true },
+      });
+      for (const r of rows) if (r.optVolume) this.priorActivity.set(r.symbol, Number(r.optVolume));
     });
     await tryDb('load ratio history', async (db) => {
       const points = await db.aggregateRatioPoint.findMany({
@@ -284,7 +343,7 @@ export class Poller {
     const intervalSec = Math.max(15, Number(process.env.POLL_INTERVAL_SEC ?? 30));
     // Spend at most this cycle's share of the per-minute budget, so the
     // queue never grows unboundedly on constrained plans.
-    const budget = Math.max(1, Math.floor((provider.bucket.perMinute * intervalSec) / 60));
+    const budget = Math.max(1, Math.floor((provider.bucket.currentPerMinute * intervalSec) / 60));
     const batch = this.pickBatch(budget);
 
     const updated: TickerFlow[] = [];
@@ -293,9 +352,12 @@ export class Poller {
       while (cursor < batch.length) {
         const item = batch[cursor++];
         if (!item) break;
+        // Stamp the ATTEMPT, success or not: a symbol that keeps failing would
+        // otherwise stay "never fetched" — the most overdue name there is — and
+        // be picked first on every cycle forever, wasting a slot and a token.
+        this.lastFetched.set(item.symbol, Date.now());
         try {
           const agg = await provider.getOptionsFlowSnapshot(item.symbol, item.priority);
-          this.lastFetched.set(item.symbol, Date.now());
           updated.push(this.engine.ingest(agg));
         } catch (err) {
           console.error(`[poller] ${item.symbol} fetch failed:`, err instanceof Error ? err.message : err);
@@ -306,32 +368,47 @@ export class Poller {
     return updated;
   }
 
-  /** Priority order: watchlist → currently spiking → stalest first. */
+  /**
+   * Tiered schedule (refresh-schedule.ts): busy, watched and on-screen names
+   * every few minutes, the quiet long tail every half hour or so, scaled to the
+   * source's rate budget — so the universe can grow without every name waiting
+   * a full lap.
+   */
   private pickBatch(budget: number): { symbol: string; priority: number }[] {
+    const provider = getDataProvider();
     const watch = new Set(this.engine.settings.watchlist);
-    const scored = TRACKED_UNIVERSE.map(({ symbol }) => {
+    const candidates: RefreshCandidate[] = TRACKED_UNIVERSE.map(({ symbol }) => {
       const flow = this.engine.getFlow(symbol);
-      const spiking = flow !== null && flow.spikeLevel !== 'normal';
-      const priority = watch.has(symbol) ? 1 : spiking ? 2 : 5;
-      return { symbol, priority, staleness: this.lastFetched.get(symbol) ?? 0 };
+      const today = flow && flow.lastUpdated > 0 ? flow.sessionPutVolume + flow.sessionCallVolume : 0;
+      return {
+        symbol,
+        lastFetched: this.lastFetched.get(symbol) ?? 0,
+        activity: today > 0 ? today : (this.priorActivity.get(symbol) ?? 0),
+        watch: watch.has(symbol),
+        spiking: flow !== null && flow.spikeLevel !== 'normal',
+        benchmark: BENCHMARK_SYMBOLS.has(symbol),
+      };
     });
-    scored.sort((a, b) => a.priority - b.priority || a.staleness - b.staleness);
-    return scored.slice(0, budget).map(({ symbol, priority }) => ({ symbol, priority }));
+    return planRefresh(candidates, budget, provider?.bucket.currentPerMinute ?? 60, Date.now(), undefined, this.startedAt);
   }
 
   private async persistCycle(bucketMs: number, updated: TickerFlow[]): Promise<void> {
     if (updated.length === 0) return;
     // Round to the 5-minute bucket; upsert so repeated cycles within a bucket
-    // keep the latest values.
-    const bucketStart = new Date(Math.floor(bucketMs / 300_000) * 300_000);
+    // keep the latest values. Each ticker's snapshot is filed under the bucket
+    // of the market moment it reflects (dataAsOf), not when it was fetched —
+    // a 15-minute-delayed chain fetched at 10:20 describes 10:05.
+    const toBucket = (ms: number): Date => new Date(Math.floor(ms / 300_000) * 300_000);
+    const bucketStart = toBucket(bucketMs);
     await tryDb('persist snapshots', async (db) => {
       await db.$transaction(
-        updated.slice(0, 500).map((f) =>
-          db.flowSnapshot.upsert({
-            where: { symbol_bucketStart: { symbol: f.symbol, bucketStart } },
+        updated.slice(0, 500).map((f) => {
+          const rowBucket = f.dataAsOf > 0 ? toBucket(f.dataAsOf) : bucketStart;
+          return db.flowSnapshot.upsert({
+            where: { symbol_bucketStart: { symbol: f.symbol, bucketStart: rowBucket } },
             create: {
               symbol: f.symbol,
-              bucketStart,
+              bucketStart: rowBucket,
               putVolume: f.sessionPutVolume,
               callVolume: f.sessionCallVolume,
               putPremium: f.putPremium,
@@ -346,8 +423,8 @@ export class Poller {
               putCallRatio: f.putCallRatio,
               spikeScore: f.spikeScore,
             },
-          }),
-        ),
+          });
+        }),
       );
       const agg = this.engine.getAggregate();
       if (agg) {

@@ -56,7 +56,10 @@ export function TickerDetail({ symbol }: { symbol: string }): JSX.Element {
     queryKey: ['ticker', symbol],
     queryFn: async (): Promise<DetailResponse> => {
       const res = await fetch(`/api/flow/${symbol}`);
-      if (!res.ok) throw new Error(res.status === 404 ? 'not-tracked' : 'fetch-failed');
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { pending?: boolean } | null;
+        throw new Error(res.status === 404 ? (body?.pending ? 'pending' : 'not-tracked') : 'fetch-failed');
+      }
       return (await res.json()) as DetailResponse;
     },
     refetchInterval: 15_000,
@@ -81,7 +84,9 @@ export function TickerDetail({ symbol }: { symbol: string }): JSX.Element {
           <p className="mt-6 text-sm text-slate-400">
             {query.error instanceof Error && query.error.message === 'not-tracked'
               ? `${symbol} is not in the tracked universe (edit src/lib/universe.ts to add it).`
-              : 'Failed to load ticker data — retrying automatically.'}
+              : query.error instanceof Error && query.error.message === 'pending'
+                ? `${symbol} is tracked, but its first snapshot hasn't arrived yet — after a restart the busiest names load first and quieter ones within about half an hour. This page retries automatically.`
+                : 'Failed to load ticker data — retrying automatically.'}
           </p>
         ) : (
           <TickerBody data={query.data} />
@@ -242,8 +247,15 @@ function TickerHeader({ symbol, flow, sections }: { symbol: string; flow: Ticker
                   {flow.ivRank !== null ? `· ${flow.ivRank}` : ''}
                 </span>
               </HeaderStat>
-              <HeaderStat label="Updated">
-                <span className="tnum text-slate-400">{flow.lastUpdated > 0 ? `${formatTime(flow.lastUpdated)} ET` : '—'}</span>
+              <HeaderStat
+                label="Data as of"
+                title={
+                  flow.dataAsOf > 0
+                    ? `Market time the option data reflects. The free feed runs 15 minutes behind · fetched ${formatTime(flow.lastUpdated)} ET`
+                    : undefined
+                }
+              >
+                <span className="tnum text-slate-400">{flow.dataAsOf > 0 ? `${formatTime(flow.dataAsOf)} ET` : '—'}</span>
               </HeaderStat>
             </div>
           )}
@@ -812,6 +824,8 @@ function Section({ id, children }: { id: string; children: ReactNode }): JSX.Ele
  */
 function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
   const { flow, history } = data;
+  // 5-minute figures need two snapshots at least a minute apart; until then they are unmeasured, not zero.
+  const measured = flow.flowWindowMs !== null;
   return (
     <div className="grid items-start gap-3 xl:grid-cols-12">
       <div className="space-y-3 xl:col-span-7">
@@ -824,16 +838,20 @@ function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
                 value={formatRatio(flow.putCallRatio)}
                 className={flow.putCallRatio > 1 ? 'text-bearish' : 'text-bullish'}
               />
-              <Stat label="Puts 5m / session" value={`${formatCompact(flow.putVolume)} / ${formatCompact(flow.sessionPutVolume)}`} />
-              <Stat label="Calls 5m / session" value={`${formatCompact(flow.callVolume)} / ${formatCompact(flow.sessionCallVolume)}`} />
-              <Stat label="Premium 5m" value={formatPremium(flow.putPremium + flow.callPremium)} />
+              <Stat label="Puts per 5m / session" value={`${measured ? formatCompact(flow.putVolume) : '—'} / ${formatCompact(flow.sessionPutVolume)}`} />
+              <Stat label="Calls per 5m / session" value={`${measured ? formatCompact(flow.callVolume) : '—'} / ${formatCompact(flow.sessionCallVolume)}`} />
+              <Stat label="Premium per 5m" value={measured ? formatPremium(flow.putPremium + flow.callPremium) : '—'} />
               <Stat
                 label="Chain price (delayed)"
                 value={flow.underlyingPrice > 0 ? `$${flow.underlyingPrice.toFixed(2)}` : '—'}
                 className={flow.priceChangePct >= 0 ? 'text-bullish' : 'text-bearish'}
               />
               <Stat label="Vol vs expected" value={`${flow.volumeVsExpected.toFixed(1)}×`} />
-              <Stat label="Net flow 5m" value={`${flow.netFlow > 0 ? '+' : ''}${formatCompact(flow.netFlow)}`} className={flow.netFlow > 0 ? 'text-bullish' : flow.netFlow < 0 ? 'text-bearish' : undefined} />
+              <Stat
+                label="Net flow per 5m"
+                value={measured ? `${flow.netFlow > 0 ? '+' : ''}${formatCompact(flow.netFlow)}` : '—'}
+                className={measured ? (flow.netFlow > 0 ? 'text-bullish' : flow.netFlow < 0 ? 'text-bearish' : undefined) : 'text-slate-600'}
+              />
               <div>
                 <p className="text-[10px] uppercase tracking-wider text-slate-500">P/C — last 30 min</p>
                 <div className="mt-1">
@@ -874,7 +892,7 @@ function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
       <div className="xl:col-span-12">
         <Section id="history">
           <Card>
-            <CardHeader title="Stored 5-min history (30 days)" />
+            <CardHeader title="Stored snapshots — latest 100 (5-min buckets, by data time)" />
             {history.length === 0 ? (
               <p className="py-6 text-center text-xs text-slate-500">
                 No stored history — connect a database (DATABASE_URL) to accumulate snapshots for backtesting.

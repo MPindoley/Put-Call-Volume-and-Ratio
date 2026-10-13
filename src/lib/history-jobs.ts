@@ -13,6 +13,7 @@
  *                     day after each alert. Powers the accuracy scoreboard.
  *  pruneHistory     — retention: snapshots 35d, ratio points 90d, alerts 120d.
  */
+import type { PrismaClient } from '@prisma/client';
 import type { SpikeAlert } from '@/types';
 import { getAnalyticsConfig } from './analytics-config';
 import { historicalVol, ivRank } from './chain-analytics';
@@ -159,10 +160,43 @@ export async function scoreAlerts(): Promise<number> {
   return scored ?? 0;
 }
 
+/** Intraday snapshots are kept at full 5-minute resolution for this long, then thinned. */
+export const SNAPSHOT_FULL_RES_DAYS = 5;
+
+/**
+ * Thin snapshots older than `cutoff` to the LAST one per symbol per day.
+ * Snapshot volumes are cumulative, so that row carries the day's totals — all
+ * that baselines (computeBaselines: MAX per day) and older history need — and
+ * alert scoring only reads rows within its first few days. At ~1,400 names this
+ * keeps the table to a few weeks of daily rows plus ~5 days of intraday detail
+ * (~0.2M rows) instead of ~0.9M, which matters on a 0.5 GB free database.
+ */
+export async function downsampleSnapshots(db: PrismaClient, cutoff: Date): Promise<number> {
+  return db.$executeRaw`
+    DELETE FROM "FlowSnapshot" f
+    USING (
+      SELECT "symbol", date_trunc('day', "bucketStart") AS day, MAX("bucketStart") AS keep
+      FROM "FlowSnapshot"
+      WHERE "bucketStart" < ${cutoff}
+      GROUP BY 1, 2
+    ) k
+    WHERE f."symbol" = k."symbol"
+      AND date_trunc('day', f."bucketStart") = k.day
+      AND f."bucketStart" < k.keep
+      AND f."bucketStart" < ${cutoff}
+  `;
+}
+
 export async function pruneHistory(): Promise<void> {
   await tryDb('prune history', async (db) => {
     await db.flowSnapshot.deleteMany({ where: { bucketStart: { lt: new Date(Date.now() - 35 * DAY_MS) } } });
+    const thinned = await downsampleSnapshots(db, new Date(Date.now() - SNAPSHOT_FULL_RES_DAYS * DAY_MS));
+    if (thinned > 0) console.log(`[maintenance] thinned ${thinned} intraday snapshots older than ${SNAPSHOT_FULL_RES_DAYS} days`);
     await db.aggregateRatioPoint.deleteMany({ where: { bucketStart: { lt: new Date(Date.now() - 90 * DAY_MS) } } });
+    // Same horizon as DailyMetric (recordDailyMetrics): a relative-metric row with
+    // no close left to pair it with feeds nothing, and unbounded growth at ~1,400
+    // names would add ~140 MB a year.
+    await db.relativeMetric.deleteMany({ where: { date: { lt: new Date(Date.now() - 400 * DAY_MS) } } });
     await db.alert.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 120 * DAY_MS) } } });
   });
 }

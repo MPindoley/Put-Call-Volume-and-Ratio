@@ -14,7 +14,7 @@
  */
 import type { RawContract } from '@/types';
 import type { OptionsChainAggregate, OptionsDataProvider } from './provider';
-import { TokenBucket, withBackoff } from './rate-limiter';
+import { PermanentError, TokenBucket, withBackoff } from './rate-limiter';
 
 const BASE = 'https://cdn.cboe.com/api/global/delayed_quotes';
 
@@ -63,6 +63,20 @@ interface CboeResponse {
  * ~4 days, and the poller idles while the market is closed anyway.
  */
 export const MAX_SNAPSHOT_AGE_MS = 5 * 86_400_000;
+
+/**
+ * The feed's delay. A snapshot's `timestamp` is when CBOE generated it; its
+ * contents are this much older (verified against the quote endpoint, whose
+ * last_trade_time trails its timestamp by 15 minutes).
+ */
+export const CBOE_DELAY_MS = 15 * 60_000;
+
+/** Market time a snapshot reflects: generation time minus the delay; null when unknown. */
+export function snapshotDataTime(timestamp: string | undefined): number | null {
+  if (!timestamp) return null;
+  const ms = Date.parse(`${timestamp.replace(' ', 'T')}Z`);
+  return Number.isFinite(ms) ? ms - CBOE_DELAY_MS : null;
+}
 
 /**
  * Age of a CBOE snapshot, or null when the stamp is absent or unparseable.
@@ -125,6 +139,8 @@ export class CboeClient implements OptionsDataProvider {
           this.bucket.penalize(RATE_LIMIT_COOLDOWN_MS);
           throw new Error('rate limited (429)');
         }
+        // 403/404: the CDN does not serve this symbol — retrying returns the same.
+        if (res.status === 403 || res.status === 404) throw new PermanentError(`cboe ${res.status} for ${label}`);
         if (!res.ok) throw new Error(`cboe ${res.status} for ${label}`);
         return (await res.json()) as T;
       },
@@ -161,6 +177,7 @@ export class CboeClient implements OptionsDataProvider {
       iv30: data.data?.iv30 && data.data.iv30 > 0 ? data.data.iv30 : null,
       iv30Change: data.data?.iv30_change ?? null,
       contracts: [],
+      asOf: snapshotDataTime(data.timestamp) ?? undefined,
     };
 
     for (const c of data.data?.options ?? []) {
