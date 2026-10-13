@@ -1,6 +1,7 @@
 'use client';
 
 /** Session leaders: most unusual, biggest premium, strongest directional flow. */
+import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { SpikeBadge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -41,9 +42,9 @@ function LeaderList({
         <ul>
           {entries.map((e) => (
             <li key={e.symbol} className="flex items-center gap-2 border-t border-surface-border/40 py-1.5 text-xs">
-              <a href={`/ticker/${e.symbol}`} className="w-14 font-semibold text-slate-200 hover:text-blue-400">
+              <Link href={`/ticker/${e.symbol}`} prefetch={false} className="w-14 font-semibold text-slate-200 hover:text-blue-400">
                 {e.symbol}
-              </a>
+              </Link>
               <SpikeBadge level={e.level as SpikeLevel} />
               <span className={cn('tnum', e.ratio > 1 ? 'text-bearish' : 'text-bullish')}>P/C {e.ratio.toFixed(2)}</span>
               <span className="ml-auto tnum text-slate-300">{render(e)}</span>

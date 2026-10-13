@@ -9,6 +9,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardHeader } from '@/components/ui/card';
+import { PageHeader } from '@/components/shell/PageHeader';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Calibration, SignalSummary } from '@/lib/learning';
 import type { LearningReport } from '@/lib/learning-jobs';
@@ -58,18 +59,17 @@ export function LearningView(): JSX.Element {
   });
 
   return (
-    <div className="mx-auto max-w-5xl space-y-3 p-4">
-      <a href="/" className="text-xs text-slate-500 hover:text-slate-300">
-        ← Back to dashboard
-      </a>
-      <div>
-        <h1 className="text-2xl font-bold text-slate-100">What the app has learned</h1>
-        <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-400">
-          Every signal is graded 10 trading sessions after it fires: did the stock beat the market in the
-          direction the signal pointed, more often than it does with no signal at all? Each night the app updates what that record
-          says, leaning hard on small samples toward &ldquo;no edge&rdquo; until the evidence earns more. Then it grades itself.
-        </p>
-      </div>
+    <div className="mx-auto max-w-6xl space-y-3 p-4 lg:p-6">
+      <PageHeader
+        title="What the app has learned"
+        description={
+          <>
+            Every signal is graded 10 trading sessions after it fires: did the stock beat the market in the direction the signal
+            pointed, more often than it does with no signal at all? Each night the app updates what that record says, leaning
+            hard on small samples toward &ldquo;no edge&rdquo; until the evidence earns more. Then it grades itself.
+          </>
+        }
+      />
 
       {report.isLoading ? (
         <Skeleton className="h-28 w-full" />

@@ -1,106 +1,44 @@
 'use client';
 
 /**
- * Client dashboard composition: wires the socket + query hydration once and
- * lays out status bar, ratio panels, alert feed and the flow table.
- * Each region is wrapped in an error boundary so one failing panel never
- * takes down the screen.
+ * Scanner page. Table-first: a one-row market strip, then the scan table
+ * filling the rest of the screen beside a collapsible side panel (Market /
+ * Alerts / Regime / Leaders / Accuracy). Socket, snapshot, toasts and
+ * shortcuts are owned by the app shell. Each region sits in an error
+ * boundary so one failing panel never takes down the screen.
  */
-import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { useOptionsFlow } from '@/hooks/useOptionsFlow';
-import { useWebSocket } from '@/hooks/useWebSocket';
-import { AlertToasts } from './AlertFeed';
-import { BenchmarkStrip } from './BenchmarkStrip';
+import { PanelBoundary } from '@/components/ui/panel-boundary';
+import { usePersistentState } from '@/hooks/usePersistentState';
+import { cn } from '@/lib/utils';
+import { useFlowStore } from '@/store/flowStore';
 import { FlowTable } from './FlowTable';
-import { KeyboardShortcuts } from './KeyboardShortcuts';
-import { NotificationBell } from './NotificationBell';
-import { RatioChart } from './RatioChart';
-import { RatioPanel } from './RatioPanel';
+import { MarketStrip } from './MarketStrip';
 import { RightPanel } from './RightPanel';
-import { SettingsPanel } from './SettingsPanel';
-import { StatusBar } from './StatusBar';
-
-class PanelBoundary extends Component<{ name: string; children: ReactNode }, { failed: boolean }> {
-  state = { failed: false };
-
-  static getDerivedStateFromError(): { failed: boolean } {
-    return { failed: true };
-  }
-
-  componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error(`[panel:${this.props.name}]`, error, info.componentStack);
-  }
-
-  render(): ReactNode {
-    if (this.state.failed) {
-      return (
-        <div className="flex h-full items-center justify-center rounded-lg border border-bearish/40 bg-surface-raised p-4 text-xs text-slate-400">
-          The {this.props.name} panel hit an error — the rest of the dashboard is unaffected.
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
 
 export function Dashboard(): JSX.Element {
-  useWebSocket();
-  const { isLoading, isError } = useOptionsFlow();
+  const isLoading = useFlowStore((s) => s.status === null);
+  const [panelOpen, setPanelOpen] = usePersistentState('flow-ui-side-panel-open', true);
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center gap-3 border-b border-surface-border bg-surface-raised px-4 py-2">
-        <h1 className="text-sm font-bold tracking-tight text-slate-100">
-          OPTIONS FLOW <span className="font-normal text-slate-500">· S&amp;P 500 put/call analytics</span>
-        </h1>
-        <div className="ml-auto flex items-center gap-2">
-          <a href="/sectors" className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-surface-overlay hover:text-slate-200">
-            Cohorts
-          </a>
-          <a href="/learning" className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-surface-overlay hover:text-slate-200">
-            Learning
-          </a>
-          <NotificationBell />
-          <SettingsPanel />
-        </div>
-      </header>
-
-      <PanelBoundary name="status">
-        <StatusBar />
+    <div className="flex flex-col gap-3 p-3 xl:h-full">
+      <PanelBoundary name="market summary">
+        <MarketStrip />
       </PanelBoundary>
 
-      {isError && (
-        <p className="border-b border-bearish/40 bg-bearish/10 px-4 py-1.5 text-xs text-bearish">
-          Backend unreachable — showing last known data. Retrying automatically.
-        </p>
-      )}
-
-      <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 xl:grid-cols-[1fr_360px]">
-        <div className="flex min-h-0 flex-col gap-3">
-          <PanelBoundary name="benchmarks">
-            <BenchmarkStrip />
+      <div className={cn('grid grid-cols-1 gap-3 xl:min-h-0 xl:flex-1', panelOpen && 'xl:grid-cols-[minmax(0,1fr)_340px]')}>
+        <div className="h-[75vh] min-h-[420px] min-w-0 xl:h-auto xl:min-h-0">
+          <PanelBoundary name="flow table">
+            <FlowTable isLoading={isLoading} panelOpen={panelOpen} onTogglePanel={() => setPanelOpen((v) => !v)} />
           </PanelBoundary>
-          <div className="grid shrink-0 grid-cols-1 gap-3 lg:grid-cols-2">
-            <PanelBoundary name="ratio">
-              <RatioPanel />
-            </PanelBoundary>
-            <PanelBoundary name="chart">
-              <RatioChart />
+        </div>
+        {panelOpen && (
+          <div className="h-[640px] min-w-0 xl:h-auto xl:min-h-0">
+            <PanelBoundary name="side">
+              <RightPanel />
             </PanelBoundary>
           </div>
-          <PanelBoundary name="flow table">
-            <FlowTable isLoading={isLoading} />
-          </PanelBoundary>
-        </div>
-        <div className="flex min-h-0 flex-col">
-          <PanelBoundary name="alerts">
-            <RightPanel />
-          </PanelBoundary>
-        </div>
-      </main>
-
-      <AlertToasts />
-      <KeyboardShortcuts />
+        )}
+      </div>
     </div>
   );
 }

@@ -4,13 +4,18 @@
  * Single-ticker view: live flow stats plus stored 5-minute history (ratio and
  * volume) when the database is connected.
  */
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardHeader } from '@/components/ui/card';
 import { SpikeBadge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ConvictionCell, QUOTE_STALE_MS } from '@/components/ui/conviction';
 import { Sparkline } from '@/components/dashboard/Sparkline';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
 import type { TrackRecord } from '@/lib/learning-data';
+import { useFlowStore } from '@/store/flowStore';
 import type { TickerFlow } from '@/types';
 
 interface HistoryPoint {
@@ -27,6 +32,25 @@ interface DetailResponse {
   trackRecord: TrackRecord | null;
 }
 
+interface SectionDef {
+  id: string;
+  label: string;
+}
+
+/** Which sections this ticker has, in reading order (cards with nothing to show are skipped). */
+function sectionsFor(data: DetailResponse | undefined): SectionDef[] {
+  const out: SectionDef[] = [{ id: 'overview', label: 'Overview' }];
+  if (!data) return out;
+  const { flow } = data;
+  if (flow.analytics || flow.iv30 !== null) out.push({ id: 'volatility', label: 'Volatility & positioning' });
+  out.push({ id: 'relative', label: 'Sector-relative' });
+  if (data.trackRecord) out.push({ id: 'track-record', label: 'Track record' });
+  if (flow.eventGauge) out.push({ id: 'event', label: 'Event move' });
+  if (flow.idiosyncraticMoves && flow.idiosyncraticMoves.length > 0) out.push({ id: 'idiosyncratic', label: 'Idiosyncratic' });
+  out.push({ id: 'history', label: 'History' });
+  return out;
+}
+
 export function TickerDetail({ symbol }: { symbol: string }): JSX.Element {
   const query = useQuery({
     queryKey: ['ticker', symbol],
@@ -38,43 +62,219 @@ export function TickerDetail({ symbol }: { symbol: string }): JSX.Element {
     refetchInterval: 15_000,
     retry: 1,
   });
+  // The streamed row (socket) is fresher than the 15s detail poll — prefer it for the header.
+  const liveRow = useFlowStore((s) => s.rows[symbol]);
+  const headerFlow = liveRow ?? query.data?.flow ?? null;
+  const sections = sectionsFor(query.data);
 
   return (
-    <div className="mx-auto max-w-4xl p-4">
-      <a href="/" className="text-xs text-slate-500 hover:text-slate-300">
-        ← Back to dashboard
-      </a>
-      <h1 className="mt-2 flex items-center gap-2 text-2xl font-bold text-slate-100">
-        {symbol}
-        {query.data?.flow.inverse && (
-          <span
-            className="rounded border border-caution/50 bg-caution/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-caution"
-            title={`Inverse${query.data.flow.leverage !== 1 ? ` ${query.data.flow.leverage}×` : ''} product — sentiment is read in underlying-exposure terms (raw data untouched)`}
-          >
-            Inverse {query.data.flow.leverage !== 1 ? `${query.data.flow.leverage}×` : ''}
-          </span>
+    <div>
+      <TickerHeader symbol={symbol} flow={headerFlow} sections={query.data ? sections : []} />
+      <div className="mx-auto max-w-7xl px-4 pb-8 pt-4 lg:px-6">
+        {query.isLoading ? (
+          <div className="grid gap-3 xl:grid-cols-12">
+            <Skeleton className="h-40 w-full xl:col-span-7" />
+            <Skeleton className="h-40 w-full xl:col-span-5" />
+            <Skeleton className="h-64 w-full xl:col-span-7" />
+          </div>
+        ) : query.isError || !query.data ? (
+          <p className="mt-6 text-sm text-slate-400">
+            {query.error instanceof Error && query.error.message === 'not-tracked'
+              ? `${symbol} is not in the tracked universe (edit src/lib/universe.ts to add it).`
+              : 'Failed to load ticker data — retrying automatically.'}
+          </p>
+        ) : (
+          <TickerBody data={query.data} />
         )}
-        {!query.data?.flow.inverse && (query.data?.flow.leverage ?? 1) !== 1 && (
-          <span className="rounded border border-surface-border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-            {query.data?.flow.leverage}× leveraged
-          </span>
-        )}
-      </h1>
+      </div>
+    </div>
+  );
+}
 
-      {query.isLoading ? (
-        <div className="mt-4 space-y-3">
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-40 w-full" />
+function HeaderStat({ label, children, title }: { label: string; children: ReactNode; title?: string }): JSX.Element {
+  return (
+    <div title={title}>
+      <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">{label}</p>
+      <div className="mt-0.5 flex h-5 items-center gap-1.5 text-sm">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Highlights the section nav entry for whichever section is at the top of the
+ * view — or the last one once the page is scrolled to the bottom, where short
+ * trailing sections can never reach the top.
+ */
+function useActiveSection(ids: string[]): string | null {
+  const [active, setActive] = useState<string | null>(null);
+  const key = ids.join(',');
+  useEffect(() => {
+    const els = key
+      .split(',')
+      .map((id) => document.getElementById(id))
+      .filter((el): el is HTMLElement => el !== null);
+    if (els.length === 0) return;
+    const scroller = document.querySelector('main');
+    const atBottom = (): boolean => !!scroller && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4;
+    const visible = new Map<string, boolean>();
+    const pick = (): void => {
+      if (atBottom()) {
+        setActive(els[els.length - 1]!.id);
+        return;
+      }
+      const first = els.find((el) => visible.get(el.id));
+      if (first) setActive(first.id);
+    };
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) visible.set(e.target.id, e.isIntersecting);
+        pick();
+      },
+      { rootMargin: '-160px 0px -55% 0px' },
+    );
+    els.forEach((el) => io.observe(el));
+    scroller?.addEventListener('scroll', pick, { passive: true });
+    return () => {
+      io.disconnect();
+      scroller?.removeEventListener('scroll', pick);
+    };
+  }, [key]);
+  return active;
+}
+
+/**
+ * Sticky page header: where you are (Scanner › sector › symbol), the live
+ * price and the numbers you came for (learned lean, P/C, unusual activity,
+ * IV), pin-to-scanner, and a jump bar for the sections below.
+ */
+function TickerHeader({ symbol, flow, sections }: { symbol: string; flow: TickerFlow | null; sections: SectionDef[] }): JSX.Element {
+  const router = useRouter();
+  const pinned = useFlowStore((s) => s.pinned.includes(symbol));
+  const togglePin = useFlowStore((s) => s.togglePin);
+  const setSectorFilter = useFlowStore((s) => s.setSectorFilter);
+  const active = useActiveSection(sections.map((s) => s.id));
+
+  const live = flow?.livePrice ?? null;
+  const liveStale = flow?.livePriceAt != null && Date.now() - flow.livePriceAt > QUOTE_STALE_MS;
+  const price = live ?? (flow && flow.underlyingPrice > 0 ? flow.underlyingPrice : null);
+  const chg = live !== null ? flow?.livePriceChangePct ?? null : flow && flow.lastUpdated > 0 ? flow.priceChangePct : null;
+
+  return (
+    <div className="sticky top-0 z-20 border-b border-surface-border bg-surface/95 backdrop-blur">
+      <div className="mx-auto max-w-7xl px-4 pt-3 lg:px-6">
+        <nav className="flex items-center gap-1.5 text-[11px] text-slate-500" aria-label="Breadcrumb">
+          <Link href="/" className="hover:text-slate-300">
+            Scanner
+          </Link>
+          {flow?.sector && flow.sector !== 'Unknown' && (
+            <>
+              <span aria-hidden>›</span>
+              <button
+                onClick={() => {
+                  setSectorFilter(flow.sector);
+                  router.push('/');
+                }}
+                className="hover:text-slate-300"
+                title={`Show ${flow.sector} in the scanner`}
+              >
+                {flow.sector}
+              </button>
+            </>
+          )}
+          <span aria-hidden>›</span>
+          <span className="text-slate-300">{symbol}</span>
+        </nav>
+
+        <div className="mt-1.5 flex flex-wrap items-end gap-x-8 gap-y-3">
+          <div className="flex items-baseline gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-100">{symbol}</h1>
+            {flow?.inverse && (
+              <span
+                className="self-center rounded border border-caution/50 bg-caution/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-caution"
+                title={`Inverse${flow.leverage !== 1 ? ` ${flow.leverage}×` : ''} product — sentiment is read in underlying-exposure terms (raw data untouched)`}
+              >
+                Inverse {flow.leverage !== 1 ? `${flow.leverage}×` : ''}
+              </span>
+            )}
+            {flow && !flow.inverse && flow.leverage !== 1 && (
+              <span className="self-center rounded border border-surface-border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                {flow.leverage}× leveraged
+              </span>
+            )}
+            {price !== null ? (
+              <span
+                className={cn('text-lg font-semibold tnum', liveStale ? 'text-slate-400' : 'text-slate-100')}
+                title={live !== null ? (liveStale ? 'Live quote (stale)' : 'Live last trade') : 'Delayed option-chain price — no live quote'}
+              >
+                {price.toFixed(2)}
+                {chg !== null && (
+                  <span className={cn('ml-2 text-sm', chg >= 0 ? 'text-bullish' : 'text-bearish', liveStale && 'opacity-70')}>
+                    {chg >= 0 ? '+' : ''}
+                    {chg.toFixed(2)}%
+                  </span>
+                )}
+                {live === null && <span className="ml-2 text-[10px] font-normal uppercase tracking-wide text-slate-500">delayed</span>}
+              </span>
+            ) : (
+              <span className="text-lg text-slate-600">—</span>
+            )}
+          </div>
+
+          {flow && (
+            <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
+              <HeaderStat label="Learned lean" title="Signals from the latest session, weighted by how well each has actually worked — see Track record">
+                <a href="#track-record" className="hover:opacity-80">
+                  <ConvictionCell row={flow} />
+                </a>
+              </HeaderStat>
+              <HeaderStat label="P/C 5m">
+                <span className={cn('font-semibold tnum', flow.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
+                  {formatRatio(flow.putCallRatio)}
+                </span>
+              </HeaderStat>
+              <HeaderStat label="Unusual" title={`Volume ${flow.volumeVsExpected.toFixed(1)}× expected`}>
+                <SpikeBadge level={flow.spikeLevel} />
+                <span className="tnum text-slate-300">{flow.spikeScore}</span>
+              </HeaderStat>
+              <HeaderStat label="IV30 · rank">
+                <span className="tnum text-slate-200">{flow.iv30 !== null ? flow.iv30.toFixed(1) : '—'}</span>
+                <span className={cn('tnum', (flow.ivRank ?? 0) >= 75 ? 'text-caution' : 'text-slate-500')}>
+                  {flow.ivRank !== null ? `· ${flow.ivRank}` : ''}
+                </span>
+              </HeaderStat>
+              <HeaderStat label="Updated">
+                <span className="tnum text-slate-400">{flow.lastUpdated > 0 ? `${formatTime(flow.lastUpdated)} ET` : '—'}</span>
+              </HeaderStat>
+            </div>
+          )}
+
+          <button
+            onClick={() => togglePin(symbol)}
+            className={cn(
+              'ml-auto flex items-center gap-1.5 rounded border px-2.5 py-1 text-xs',
+              pinned ? 'border-caution/50 text-caution' : 'border-surface-border text-slate-400 hover:text-slate-200',
+            )}
+            title={pinned ? 'Unpin from the top of the scanner' : 'Pin to the top of the scanner'}
+          >
+            {pinned ? '★ Pinned' : '☆ Pin to scanner'}
+          </button>
         </div>
-      ) : query.isError || !query.data ? (
-        <p className="mt-6 text-sm text-slate-400">
-          {query.error instanceof Error && query.error.message === 'not-tracked'
-            ? `${symbol} is not in the tracked universe (edit src/lib/universe.ts to add it).`
-            : 'Failed to load ticker data — retrying automatically.'}
-        </p>
-      ) : (
-        <TickerBody data={query.data} />
-      )}
+
+        <nav className="-mb-px mt-2 flex gap-5 overflow-x-auto text-xs" aria-label="Sections">
+          {sections.map((s) => (
+            <a
+              key={s.id}
+              href={`#${s.id}`}
+              className={cn(
+                'whitespace-nowrap border-b-2 pb-2 pt-1',
+                active === s.id ? 'border-blue-500 text-slate-100' : 'border-transparent text-slate-500 hover:text-slate-300',
+              )}
+            >
+              {s.label}
+            </a>
+          ))}
+        </nav>
+      </div>
     </div>
   );
 }
@@ -597,82 +797,119 @@ function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackReco
   );
 }
 
+function Section({ id, children }: { id: string; children: ReactNode }): JSX.Element {
+  return (
+    <section id={id} className="scroll-mt-40">
+      {children}
+    </section>
+  );
+}
+
+/**
+ * Two columns on wide screens: the live read on the left (overview, vol &
+ * positioning, sector-relative), what the app has learned and event context on
+ * the right; stored history full-width underneath. One column below xl.
+ */
 function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
   const { flow, history } = data;
   return (
-    <div className="mt-4 space-y-3">
-      <Card>
-        <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
-          <Stat
-            label="Put/Call ratio (5m)"
-            value={formatRatio(flow.putCallRatio)}
-            className={flow.putCallRatio > 1 ? 'text-bearish' : 'text-bullish'}
-          />
-          <Stat label="Puts 5m / session" value={`${formatCompact(flow.putVolume)} / ${formatCompact(flow.sessionPutVolume)}`} />
-          <Stat label="Calls 5m / session" value={`${formatCompact(flow.callVolume)} / ${formatCompact(flow.sessionCallVolume)}`} />
-          <Stat label="Premium 5m" value={formatPremium(flow.putPremium + flow.callPremium)} />
-          <Stat
-            label="Underlying"
-            value={flow.underlyingPrice > 0 ? `$${flow.underlyingPrice.toFixed(2)}` : '—'}
-            className={flow.priceChangePct >= 0 ? 'text-bullish' : 'text-bearish'}
-          />
-          <Stat label="Vol vs expected" value={`${flow.volumeVsExpected.toFixed(1)}×`} />
-          <div>
-            <p className="text-[10px] uppercase tracking-wider text-slate-500">Unusual activity</p>
-            <p className="mt-1 flex items-center gap-2">
-              <SpikeBadge level={flow.spikeLevel} />
-              <span className="text-lg font-semibold tnum text-slate-100">{flow.spikeScore}</span>
-            </p>
-          </div>
-          <Stat label="Updated" value={flow.lastUpdated > 0 ? `${formatTime(flow.lastUpdated)} ET` : '—'} />
-        </div>
-        <div className="border-t border-surface-border px-4 py-3">
-          <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">P/C ratio — last 30 min</p>
-          <Sparkline points={flow.ratioSparkline} />
-        </div>
-      </Card>
-
-      <VolatilityCard flow={flow} />
-      <SectorRelativeCard flow={flow} />
-      <EventGaugeCard flow={flow} />
-      <IdiosyncraticCard flow={flow} />
-      <TrackRecordCard flow={flow} record={data.trackRecord} />
-
-      <Card>
-        <CardHeader title="Stored 5-min history (30 days)" />
-        {history.length === 0 ? (
-          <p className="py-6 text-center text-xs text-slate-500">
-            No stored history — connect a database (DATABASE_URL) to accumulate snapshots for backtesting.
-          </p>
-        ) : (
-          <div className="max-h-80 overflow-auto">
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-surface-raised text-left text-[10px] uppercase tracking-wider text-slate-500">
-                <tr>
-                  <th className="px-3 py-1.5">Bucket</th>
-                  <th className="px-3 py-1.5 text-right">Puts</th>
-                  <th className="px-3 py-1.5 text-right">Calls</th>
-                  <th className="px-3 py-1.5 text-right">P/C</th>
-                  <th className="px-3 py-1.5 text-right">Score</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.slice(-100).reverse().map((h) => (
-                  <tr key={h.bucketStart} className="border-t border-surface-border/50 text-slate-300">
-                    <td className="px-3 py-1">{new Date(h.bucketStart).toLocaleString()}</td>
-                    <td className="px-3 py-1 text-right tnum">{formatCompact(h.putVolume)}</td>
-                    <td className="px-3 py-1 text-right tnum">{formatCompact(h.callVolume)}</td>
-                    <td className={cn('px-3 py-1 text-right tnum', h.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
-                      {formatRatio(h.putCallRatio)}
-                    </td>
-                    <td className="px-3 py-1 text-right tnum">{h.spikeScore}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+    <div className="grid items-start gap-3 xl:grid-cols-12">
+      <div className="space-y-3 xl:col-span-7">
+        <Section id="overview">
+          <Card>
+            <CardHeader title="Flow overview" />
+            <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
+              <Stat
+                label="Put/Call ratio (5m)"
+                value={formatRatio(flow.putCallRatio)}
+                className={flow.putCallRatio > 1 ? 'text-bearish' : 'text-bullish'}
+              />
+              <Stat label="Puts 5m / session" value={`${formatCompact(flow.putVolume)} / ${formatCompact(flow.sessionPutVolume)}`} />
+              <Stat label="Calls 5m / session" value={`${formatCompact(flow.callVolume)} / ${formatCompact(flow.sessionCallVolume)}`} />
+              <Stat label="Premium 5m" value={formatPremium(flow.putPremium + flow.callPremium)} />
+              <Stat
+                label="Chain price (delayed)"
+                value={flow.underlyingPrice > 0 ? `$${flow.underlyingPrice.toFixed(2)}` : '—'}
+                className={flow.priceChangePct >= 0 ? 'text-bullish' : 'text-bearish'}
+              />
+              <Stat label="Vol vs expected" value={`${flow.volumeVsExpected.toFixed(1)}×`} />
+              <Stat label="Net flow 5m" value={`${flow.netFlow > 0 ? '+' : ''}${formatCompact(flow.netFlow)}`} className={flow.netFlow > 0 ? 'text-bullish' : flow.netFlow < 0 ? 'text-bearish' : undefined} />
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">P/C — last 30 min</p>
+                <div className="mt-1">
+                  <Sparkline points={flow.ratioSparkline} />
+                </div>
+              </div>
+            </div>
+          </Card>
+        </Section>
+        {(flow.analytics || flow.iv30 !== null) && (
+          <Section id="volatility">
+            <VolatilityCard flow={flow} />
+          </Section>
         )}
-      </Card>
+        <Section id="relative">
+          <SectorRelativeCard flow={flow} />
+        </Section>
+      </div>
+
+      <div className="space-y-3 xl:col-span-5">
+        {data.trackRecord && (
+          <Section id="track-record">
+            <TrackRecordCard flow={flow} record={data.trackRecord} />
+          </Section>
+        )}
+        {flow.eventGauge && (
+          <Section id="event">
+            <EventGaugeCard flow={flow} />
+          </Section>
+        )}
+        {flow.idiosyncraticMoves && flow.idiosyncraticMoves.length > 0 && (
+          <Section id="idiosyncratic">
+            <IdiosyncraticCard flow={flow} />
+          </Section>
+        )}
+      </div>
+
+      <div className="xl:col-span-12">
+        <Section id="history">
+          <Card>
+            <CardHeader title="Stored 5-min history (30 days)" />
+            {history.length === 0 ? (
+              <p className="py-6 text-center text-xs text-slate-500">
+                No stored history — connect a database (DATABASE_URL) to accumulate snapshots for backtesting.
+              </p>
+            ) : (
+              <div className="max-h-80 overflow-auto">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-surface-raised text-left text-[10px] uppercase tracking-wider text-slate-500">
+                    <tr>
+                      <th className="px-3 py-1.5">Bucket</th>
+                      <th className="px-3 py-1.5 text-right">Puts</th>
+                      <th className="px-3 py-1.5 text-right">Calls</th>
+                      <th className="px-3 py-1.5 text-right">P/C</th>
+                      <th className="px-3 py-1.5 text-right">Score</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {history.slice(-100).reverse().map((h) => (
+                      <tr key={h.bucketStart} className="border-t border-surface-border/50 text-slate-300">
+                        <td className="px-3 py-1">{new Date(h.bucketStart).toLocaleString()}</td>
+                        <td className="px-3 py-1 text-right tnum">{formatCompact(h.putVolume)}</td>
+                        <td className="px-3 py-1 text-right tnum">{formatCompact(h.callVolume)}</td>
+                        <td className={cn('px-3 py-1 text-right tnum', h.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
+                          {formatRatio(h.putCallRatio)}
+                        </td>
+                        <td className="px-3 py-1 text-right tnum">{h.spikeScore}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        </Section>
+      </div>
     </div>
   );
 }

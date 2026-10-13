@@ -16,6 +16,7 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts';
 import { Card, CardHeader } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
 import { useFlowStore } from '@/store/flowStore';
 
 const CHART_OPTIONS = {
@@ -36,7 +37,10 @@ const CHART_OPTIONS = {
   crosshair: { horzLine: { labelBackgroundColor: '#1a2332' }, vertLine: { labelBackgroundColor: '#1a2332' } },
 } as const;
 
-export function RatioChart(): JSX.Element {
+/** `embedded` drops the card chrome and shortens the panes for the side panel. */
+export function RatioChart({ embedded = false }: { embedded?: boolean }): JSX.Element {
+  const ratioHeight = embedded ? 150 : 180;
+  const spyHeight = embedded ? 70 : 90;
   const series = useFlowStore((s) => s.ratioSeries);
   const ratioContainer = useRef<HTMLDivElement>(null);
   const spyContainer = useRef<HTMLDivElement>(null);
@@ -50,8 +54,8 @@ export function RatioChart(): JSX.Element {
   useEffect(() => {
     if (!ratioContainer.current || !spyContainer.current) return;
 
-    const ratioChart = createChart(ratioContainer.current, { ...CHART_OPTIONS, height: 180, autoSize: true });
-    const spyChart = createChart(spyContainer.current, { ...CHART_OPTIONS, height: 90, autoSize: true });
+    const ratioChart = createChart(ratioContainer.current, { ...CHART_OPTIONS, height: ratioHeight, autoSize: true });
+    const spyChart = createChart(spyContainer.current, { ...CHART_OPTIONS, height: spyHeight, autoSize: true });
 
     const ratioSeries = ratioChart.addLineSeries({
       color: '#60a5fa',
@@ -92,7 +96,7 @@ export function RatioChart(): JSX.Element {
       spyChart.remove();
       charts.current = null;
     };
-  }, []);
+  }, [ratioHeight, spyHeight]);
 
   useEffect(() => {
     if (!charts.current || series.length === 0) return;
@@ -105,30 +109,40 @@ export function RatioChart(): JSX.Element {
     charts.current.ratio.timeScale().fitContent();
   }, [series]);
 
+  const legend = (
+    <span className="flex items-center gap-3 text-[10px] text-slate-500">
+      <span className="flex items-center gap-1">
+        <span className="h-0.5 w-3 bg-[#60a5fa]" /> P/C ratio
+      </span>
+      <span className="flex items-center gap-1">
+        <span className="h-0.5 w-3 bg-[#a78bfa]" /> SPY
+      </span>
+    </span>
+  );
+  const panes = (
+    <div className={cn('relative', !embedded && 'p-2')}>
+      <div ref={ratioContainer} className="w-full" style={{ height: ratioHeight }} />
+      <div ref={spyContainer} className="w-full" style={{ height: spyHeight }} />
+      {series.length === 0 && (
+        <p className="absolute inset-0 flex items-center justify-center text-xs text-slate-500">
+          Chart populates as poll cycles complete…
+        </p>
+      )}
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <div>
+        <div className="mb-1 flex justify-end">{legend}</div>
+        {panes}
+      </div>
+    );
+  }
   return (
     <Card>
-      <CardHeader
-        title="Aggregate Ratio — Intraday"
-        right={
-          <span className="flex items-center gap-3 text-[10px] text-slate-500">
-            <span className="flex items-center gap-1">
-              <span className="h-0.5 w-3 bg-[#60a5fa]" /> P/C ratio
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="h-0.5 w-3 bg-[#a78bfa]" /> SPY
-            </span>
-          </span>
-        }
-      />
-      <div className="relative p-2">
-        <div ref={ratioContainer} className="h-[180px] w-full" />
-        <div ref={spyContainer} className="h-[90px] w-full" />
-        {series.length === 0 && (
-          <p className="absolute inset-0 flex items-center justify-center text-xs text-slate-500">
-            Chart populates as poll cycles complete…
-          </p>
-        )}
-      </div>
+      <CardHeader title="Aggregate Ratio — Intraday" right={legend} />
+      {panes}
     </Card>
   );
 }
