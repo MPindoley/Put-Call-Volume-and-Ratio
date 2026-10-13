@@ -12,8 +12,17 @@
  * Books are immutable: an existing (asOf, version) row is never rewritten.
  */
 import { Prisma } from '@prisma/client';
+import { getAnalyticsConfig } from './analytics-config';
 import { tryDb } from './db';
-import { bookAt, convictionsAt, loadLearningInputs, serializeConvictions } from './learning-data';
+import type { FlowEngine } from './flow-engine';
+import {
+  bookAt,
+  convictionsAt,
+  currentLearningVersion,
+  loadLearningInputs,
+  parseConvictions,
+  serializeConvictions,
+} from './learning-data';
 
 /** Upper bound on books reconstructed in one run (one trading year). */
 const MAX_BACKFILL_BOOKS = 252;
@@ -71,4 +80,24 @@ export async function refreshEdgeBooks(): Promise<RefreshResult | null> {
     if (written > 0) console.log(`[learning] wrote ${written} edge book(s) (${reconstructed} reconstructed), version ${version}`);
     return { version, written, reconstructed, latestAsOf: sessions[lastIdx] ?? null };
   });
+}
+
+/**
+ * Stamp the latest edge book's convictions onto the engine (current learning
+ * version only — a book built under other definitions is never shown).
+ * Returns how many flows changed. Clients pick the new values up on their next
+ * flow update; convictions change once a night, so that lag is immaterial.
+ */
+export async function loadConvictionsIntoEngine(engine: FlowEngine): Promise<number> {
+  const version = currentLearningVersion(await getAnalyticsConfig());
+  const touched = await tryDb('load convictions', async (db) => {
+    const latest = await db.edgeBook.findFirst({
+      where: { version },
+      orderBy: { asOf: 'desc' },
+      select: { asOf: true, convictions: true },
+    });
+    if (!latest) return engine.setConvictions(new Map());
+    return engine.setConvictions(parseConvictions(latest.convictions, latest.asOf.toISOString().slice(0, 10)));
+  });
+  return touched?.length ?? 0;
 }

@@ -22,6 +22,7 @@ import type {
   SectorRelative,
   SideFlow,
   SpikeAlert,
+  TickerConviction,
   TickerFlow,
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
@@ -93,6 +94,8 @@ export class FlowEngine {
   readonly eventInputs = new Map<string, EventGaugeInput>();
   /** Per-ticker recent idiosyncratic moves (unscheduled single-name), refreshed periodically. */
   readonly idiosyncraticMoves = new Map<string, IdiosyncraticMove[]>();
+  /** Per-ticker learned conviction from the latest edge book (learning-jobs.ts). */
+  readonly convictions = new Map<string, TickerConviction>();
   marketContext: MarketContext | null = null;
   settings: AppSettings = { ...DEFAULT_SETTINGS };
   mode: DataSourceMode = 'simulated';
@@ -221,6 +224,7 @@ export class FlowEngine {
       leverage: instrument.leverage,
       oiSignals,
       sectorRelative: this.sectorRelatives.get(agg.symbol) ?? null,
+      conviction: this.convictions.get(agg.symbol) ?? null,
       eventGauge,
       idiosyncraticMoves: this.idiosyncraticMoves.get(agg.symbol) ?? [],
       lastUpdated: now,
@@ -295,6 +299,25 @@ export class FlowEngine {
    *
    * Returns the flows actually touched, so the poller can push just those.
    */
+  /**
+   * Replace every ticker's learned conviction with a freshly loaded edge book's.
+   * Patches existing flows in place (a name the chain rotation has not reached
+   * since the book loaded still shows the new value) and clears names whose
+   * signals did not fire this session. Returns the flows whose value changed.
+   */
+  setConvictions(next: ReadonlyMap<string, TickerConviction>): TickerFlow[] {
+    this.convictions.clear();
+    for (const [symbol, c] of next) this.convictions.set(symbol, c);
+    const touched: TickerFlow[] = [];
+    for (const [symbol, state] of this.tickers) {
+      const c = this.convictions.get(symbol) ?? null;
+      if (state.flow.conviction === c) continue;
+      state.flow.conviction = c;
+      touched.push(state.flow);
+    }
+    return touched;
+  }
+
   applyQuotes(quotes: { symbol: string; price: number; changePct: number | null; at: number }[]): TickerFlow[] {
     const touched: TickerFlow[] = [];
     for (const q of quotes) {
@@ -414,6 +437,7 @@ export class FlowEngine {
         leverage: defaultInstrument(symbol).leverage,
         oiSignals: null,
         sectorRelative: null,
+        conviction: null,
         eventGauge: null,
         idiosyncraticMoves: [],
         lastUpdated: 0,

@@ -23,7 +23,7 @@ import { finalizedMetricWhere } from './finalized-reads';
 import { refreshEarningsRealized, refreshEventGauges, refreshIdiosyncraticEvents } from './event-jobs';
 import { recordDailyRegime } from './regime-jobs';
 import { logSignals, scoreSignals, trackBackwardationEpisodes } from './signal-jobs';
-import { refreshEdgeBooks } from './learning-jobs';
+import { loadConvictionsIntoEngine, refreshEdgeBooks } from './learning-jobs';
 import type { FlowEngine } from './flow-engine';
 import { finalizeDailyCapture, loadLatestIntoEngine } from './sector-analytics';
 import { NOT_SEEDED } from './seed-guard';
@@ -386,7 +386,8 @@ export async function runMaintenance(engine: FlowEngine): Promise<void> {
   if (sigScored > 0) console.log(`[signals] scored ${sigScored} signals (20-td window elapsed)`);
   // Learning loop: write tonight's edge book from the just-graded evidence
   // (and reconstruct any missing past books under the current version).
-  await refreshEdgeBooks();
+  const books = await refreshEdgeBooks();
+  if (books && books.written > 0) await loadConvictionsIntoEngine(engine);
   await pruneHistory();
   if (baselines > 0 || scored > 0 || idio > 0 || realized > 0) {
     console.log(

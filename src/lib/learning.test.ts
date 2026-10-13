@@ -213,3 +213,39 @@ describe('learningVersion', () => {
     expect(learningVersion(LEARNING_PARAMS, 't', 'r2')).not.toBe(v);
   });
 });
+
+describe('parseConvictions (stored book → engine)', () => {
+  it('round-trips serializeConvictions', async () => {
+    const { parseConvictions, serializeConvictions } = await import('./learning-data');
+    const json = serializeConvictions(
+      new Map([
+        ['AAPL', { score: 0.042, direction: 'bullish', thin: false, parts: [{ signalType: 'skew_z', direction: 'bullish', edge: 0.042, se: 0.05, n: 40, signalEvidence: 0.5 }] }],
+      ]),
+    );
+    const m = parseConvictions(json, '2026-10-12');
+    expect(m.get('AAPL')).toEqual({
+      score: 0.042,
+      direction: 'bullish',
+      asOf: '2026-10-12',
+      parts: [{ signalType: 'skew_z', direction: 'bullish', edge: 0.042, n: 40 }],
+    });
+  });
+
+  it('keeps a below-floor net but marks it directionless (UI shows —)', async () => {
+    const { parseConvictions } = await import('./learning-data');
+    const m = parseConvictions({ MSFT: { s: 0.004, p: [] } }, '2026-10-12');
+    expect(m.get('MSFT')?.direction).toBeNull();
+    expect(m.get('MSFT')?.score).toBe(0.004);
+  });
+
+  it('skips malformed entries instead of guessing', async () => {
+    const { parseConvictions } = await import('./learning-data');
+    const m = parseConvictions(
+      { A: { s: 'x', p: [] }, B: { s: 0.05 }, C: { s: 0.05, p: [['skew_z', 'sideways', 0.1, 3], ['skew_z', 'bearish', 0.1, 3]] } },
+      '2026-10-12',
+    );
+    expect([...m.keys()]).toEqual(['C']);
+    expect(m.get('C')!.parts).toHaveLength(1); // the 'sideways' part is dropped
+    expect(parseConvictions(null, 'x').size).toBe(0);
+  });
+});

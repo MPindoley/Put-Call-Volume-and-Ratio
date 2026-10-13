@@ -80,6 +80,21 @@ export interface MarketContext {
  * (value − sector median) spread expressed as a z-score against its own
  * finalized 30/90-day rolling history. Null while accumulating.
  */
+/**
+ * Learned conviction for one ticker: its signals from the latest finalized
+ * session, each weighted by how well that signal has actually worked (hit rate
+ * above the regime-matched base rate, shrunk toward zero on thin evidence).
+ */
+export interface TickerConviction {
+  /** Signed lean in hit-rate points above base (+ bullish, − bearish); 0.04 = 4 points. */
+  score: number;
+  /** Null when the net is too small to be worth showing. */
+  direction: 'bullish' | 'bearish' | null;
+  /** ET session the signals fired on (the edge book's asOf). */
+  asOf: string;
+  parts: { signalType: string; direction: 'bullish' | 'bearish'; edge: number; n: number }[];
+}
+
 export interface SectorRelative {
   symbol: string;
   /** The peer cohort this name is measured against (benchmark ETF key + label). */
@@ -201,6 +216,11 @@ export interface TickerFlow {
   oiSignals: { call: SideFlow; put: SideFlow; iv30Change: number | null; skewChange: number | null } | null;
   /** Sector-relative z-scores; null until the EOD capture has run with history. */
   sectorRelative: SectorRelative | null;
+  /**
+   * What the app has LEARNED about this name's signals from the latest session
+   * (the edge book, src/lib/learning.ts). Null when no signal fired that session.
+   */
+  conviction: TickerConviction | null;
   /** Earnings/event implied-move + rich/cheap gauge; null until events exist. */
   eventGauge: EventGauge | null;
   /** Recent large unscheduled single-name moves (idiosyncratic feed); newest first. */
