@@ -42,6 +42,9 @@ async function wipe(): Promise<void> {
     data: [
       { symbol: 'SPY', sector: 'ETF' },
       { symbol: 'AAPL', sector: 'Technology' },
+      { symbol: 'XLF', sector: 'ETF' },
+      // Delisted name: persisted with its sector, absent from the live universe.
+      { symbol: 'DEADCO', sector: 'Financials' },
     ],
     skipDuplicates: true,
   });
@@ -153,6 +156,63 @@ describe.skipIf(!RUN)('PIT integration (RUN_DB_TESTS=1)', () => {
     expect(data!.warming).toBe(true);
     expect(data!.matrix).toBeNull();
     expect(data!.signalsScored).toBe(0);
+  });
+
+  it('(e): survivorship — a name that stops trading is graded to its last close, gaps are not', async () => {
+    const days = weekdays(30);
+    const finalRow = (symbol: string, i: number, close: number) => ({
+      symbol,
+      date: days[i]!,
+      close,
+      final: true,
+      historicalCloseOnly: false,
+    });
+    const rows = [];
+    for (let i = 0; i < 30; i++) {
+      rows.push(finalRow('SPY', i, 500 + i)); // canonical session calendar
+      rows.push(finalRow('XLF', i, 40)); // flat sector benchmark
+      if (i !== 20) rows.push(finalRow('AAPL', i, 100 + i)); // capture gap at 20, trades after
+      if (i <= 7) rows.push(finalRow('DEADCO', i, 50 + 5 * i)); // acquired after session 7
+    }
+    await db.dailyMetric.createMany({ data: rows });
+
+    const base = { thresholdVersion: 'tv', regimeConfigVersion: 'rv', direction: 'bullish' };
+    // (1) Pending signal on the name that gets acquired inside its window.
+    const dead = await db.signalLog.create({
+      data: { ...base, symbol: 'DEADCO', firedOn: days[0]!, signalType: 'skew_z' },
+    });
+    // (2) Graded BEFORE terminal grading existed: blank returns, should be rescued.
+    const legacy = await db.signalLog.create({
+      data: { ...base, symbol: 'DEADCO', firedOn: days[1]!, signalType: 'divergence', scored: true },
+    });
+    // (3) Pending signal whose 20-day endpoint falls on a capture GAP.
+    const gap = await db.signalLog.create({
+      data: { ...base, symbol: 'AAPL', firedOn: days[0]!, signalType: 'skew_z' },
+    });
+
+    await scoreSignals();
+
+    const d = await db.signalLog.findUniqueOrThrow({ where: { id: dead.id } });
+    expect(d.scored).toBe(true);
+    expect(d.terminalOn?.toISOString().slice(0, 10)).toBe(days[7]!.toISOString().slice(0, 10));
+    expect(d.fwd20Raw).toBeCloseTo(Math.log(85 / 50), 10); // last close 50+5·7=85
+    // Benchmarks measured to the same terminal date, not the scheduled one.
+    expect(d.fwd20ExSpy).toBeCloseTo(Math.log(85 / 50) - Math.log(507 / 500), 10);
+    // Sector benchmark recovered from the PERSISTED sector (Financials → XLF).
+    expect(d.fwd20ExSector).toBeCloseTo(Math.log(85 / 50) - 0, 10);
+
+    const l = await db.signalLog.findUniqueOrThrow({ where: { id: legacy.id } });
+    expect(l.terminalOn).not.toBeNull();
+    expect(l.fwd20Raw).toBeCloseTo(Math.log(85 / 55), 10);
+
+    const g = await db.signalLog.findUniqueOrThrow({ where: { id: gap.id } });
+    expect(g.scored).toBe(true);
+    expect(g.terminalOn).toBeNull(); // a gap is not a delisting
+    expect(g.fwd20Raw).toBeNull(); // and is not papered over
+    expect(g.fwd10Raw).toBeCloseTo(Math.log(110 / 100), 10); // other horizons unaffected
+
+    // Idempotent: a second pass rewrites nothing.
+    expect(await scoreSignals()).toBe(0);
   });
 
   it('(c): ?demo=1 is refused (403) under NODE_ENV=production', async () => {

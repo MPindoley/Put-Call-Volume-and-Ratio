@@ -76,7 +76,22 @@ export interface BenchmarkResolver {
   tickerBenchmarks: Record<string, string>;
   /** The benchmark ETF for a name = its COHORT key (override → sector default). */
   benchmarkFor(symbol: string): string | null;
+  /** Sector for a name, surviving its removal from the live universe. */
+  sectorFor(symbol: string): string;
   isBenchmark(symbol: string): boolean;
+}
+
+/**
+ * Sector for a symbol, surviving universe edits. The live universe map is the
+ * current classification, but a name REMOVED from the universe (delisted,
+ * acquired) reads as 'Unknown' there. Historical work on that name — grading
+ * its still-pending signals, pooling its record into sector statistics — would
+ * then silently lose its sector benchmark and be misfiled. Fall back to the
+ * sector persisted on its Ticker row from when it was tracked.
+ */
+export function sectorWithFallback(symbol: string, persisted: ReadonlyMap<string, string>): string {
+  const live = sectorOf(symbol);
+  return live !== 'Unknown' ? live : (persisted.get(symbol) ?? 'Unknown');
 }
 
 /** Human label for a cohort key (benchmark ETF). */
@@ -116,6 +131,7 @@ export function listCohorts(resolver: BenchmarkResolver): Map<string, { label: s
 export async function loadBenchmarkResolver(): Promise<BenchmarkResolver> {
   const sectorBenchmarks: Record<string, string | null> = { ...DEFAULT_SECTOR_BENCHMARKS };
   const tickerBenchmarks: Record<string, string> = { ...DEFAULT_TICKER_BENCHMARKS };
+  const persistedSectors = new Map<string, string>();
 
   await tryDb('load sector benchmarks', async (db) => {
     for (const row of await db.sectorBenchmark.findMany()) {
@@ -123,16 +139,21 @@ export async function loadBenchmarkResolver(): Promise<BenchmarkResolver> {
     }
     const overrides = await db.tickerOverride.findMany({ where: { benchmarkEtf: { not: null } } });
     for (const o of overrides) if (o.benchmarkEtf) tickerBenchmarks[o.symbol] = o.benchmarkEtf;
+    for (const t of await db.ticker.findMany({ select: { symbol: true, sector: true } })) {
+      persistedSectors.set(t.symbol, t.sector);
+    }
   });
 
   const benchmarks = benchmarkEtfSet(sectorBenchmarks, tickerBenchmarks);
+  const sectorFor = (symbol: string): string => sectorWithFallback(symbol, persistedSectors);
 
   return {
     sectorBenchmarks,
     tickerBenchmarks,
     benchmarkFor(symbol: string): string | null {
-      return tickerBenchmarks[symbol] ?? sectorBenchmarks[sectorOf(symbol)] ?? null;
+      return tickerBenchmarks[symbol] ?? sectorBenchmarks[sectorFor(symbol)] ?? null;
     },
+    sectorFor,
     isBenchmark(symbol: string): boolean {
       return benchmarks.has(symbol);
     },
