@@ -243,7 +243,11 @@ follows automatically.
 2. Add a **PostgreSQL** plugin; Railway injects `DATABASE_URL`.
 3. Service variables: `DATA_PROVIDER=cboe` (or `massive` + `MASSIVE_API_KEY`),
    `NODE_ENV=production`.
-4. Build command `npm run build && npx prisma db push`, start command `npm start`.
+4. `railway.json` sets it up: build `npm run build`; **pre-deploy**
+   `prisma db push` (schema changes), which Railway runs inside the private
+   network after the build — the build step cannot reach a database on the
+   private `*.railway.internal` address; start `npm start`; Node 22
+   (`engines`).
 5. Railway assigns `PORT` automatically; the server reads it.
 6. Optional: `SITE_PASSWORD` to lock the site, then the Schwab variables for
    real-time flow ([`docs/SCHWAB-SETUP.md`](docs/SCHWAB-SETUP.md)).
