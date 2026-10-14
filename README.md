@@ -243,11 +243,14 @@ follows automatically.
 2. Add a **PostgreSQL** plugin; Railway injects `DATABASE_URL`.
 3. Service variables: `DATA_PROVIDER=cboe` (or `massive` + `MASSIVE_API_KEY`),
    `NODE_ENV=production`.
-4. `railway.json` sets it up: build `npm run build`; **pre-deploy**
-   `prisma db push` (schema changes), which Railway runs inside the private
-   network after the build — the build step cannot reach a database on the
-   private `*.railway.internal` address; start `npm start`; Node 22
-   (`engines`).
+4. `railway.json` sets it up: build `npm run build` (no database needed);
+   **pre-deploy** `npm run db:push:deploy` (schema changes) after the build
+   and before the new version goes live; start `npm start`; Node 22
+   (`engines`). The schema push allows 30 s per connection and retries for a
+   couple of minutes, because a database that scales to zero (Neon's free
+   tier) can take longer than Prisma's default 5 s to wake — the cause of
+   "P1001: Can't reach database server" on an after-hours deploy. The app's
+   own connections get the same 30 s (`src/lib/db.ts`).
 5. Railway assigns `PORT` automatically; the server reads it.
 6. Optional: `SITE_PASSWORD` to lock the site, then the Schwab variables for
    real-time flow ([`docs/SCHWAB-SETUP.md`](docs/SCHWAB-SETUP.md)).

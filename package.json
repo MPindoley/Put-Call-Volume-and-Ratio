@@ -18,6 +18,7 @@
     "seed:purge": "tsx scripts/purge-seed.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
+    "db:push:deploy": "node scripts/db-push.mjs",
     "db:migrate": "prisma migrate dev",
     "postinstall": "prisma generate"
   },
