@@ -352,6 +352,10 @@ export interface ConnectionStatus {
   marketOpen: boolean;
   /** Real-time overlay feed, when one is configured (null otherwise). */
   realtime: RealtimeFeedInfo | null;
+  /** Newest market time any row's data reflects (epoch ms; 0 = no data yet). */
+  dataAsOf: number;
+  /** Names left in an after-hours catch-up pass to the last close (0 = none running). */
+  catchUpRemaining: number;
 }
 
 /** The real-time overlay feed (Schwab) as the poller last saw it. */

@@ -35,6 +35,45 @@ export function MarketStatus(): JSX.Element {
     );
   }
 
+  const base = SOURCE[status.provider] ?? { label: status.provider, title: status.provider, warn: false };
+  // Real-time overlay (Schwab): say how many names it covers right now.
+  const rt = status.realtime;
+  const source =
+    rt && rt.state === 'polling' && rt.liveTickers > 0
+      ? {
+          label: `Real-time · ${rt.liveTickers}`,
+          title: `Schwab real-time flow for ${rt.liveTickers} names; the rest, and all IV/OI analytics, ${base.title}`,
+          warn: false,
+        }
+      : base;
+
+  if (!status.marketOpen && status.mode !== 'simulated') {
+    // Polling idles while the market is closed (by design): say how old the data is.
+    const asOf = status.dataAsOf;
+    return (
+      <Link
+        href="/connections"
+        className="flex items-center gap-2 rounded-full border border-surface-border px-2.5 py-1 text-[11px] text-slate-400 hover:border-slate-500"
+        title={`Market closed — polling resumes at the next open. ${source.title}`}
+      >
+        <span className="flex items-center gap-1.5">
+          <span className={cn('h-1.5 w-1.5 rounded-full bg-slate-500', status.catchUpRemaining > 0 && 'animate-pulse bg-caution')} />
+          <span>Market closed</span>
+        </span>
+        <span className="h-3 w-px bg-surface-border" aria-hidden />
+        <span className="tnum">
+          {status.catchUpRemaining > 0
+            ? `Loading the close · ${status.catchUpRemaining.toLocaleString()} left`
+            : asOf > 0
+              ? `Data as of ${dayTime(asOf)}`
+              : 'No data yet'}
+        </span>
+        <span className="h-3 w-px bg-surface-border" aria-hidden />
+        <span>{source.label}</span>
+      </Link>
+    );
+  }
+
   if (status.lastPollAt === 0) {
     // Connected, but the first poll cycle has not finished (a cold start takes a minute or so).
     return (
@@ -50,17 +89,6 @@ export function MarketStatus(): JSX.Element {
 
   const ageMs = now - status.lastPollAt;
   const freshness: 'live' | 'stale' | 'dead' = ageMs < 120_000 ? 'live' : ageMs < 300_000 ? 'stale' : 'dead';
-  const base = SOURCE[status.provider] ?? { label: status.provider, title: status.provider, warn: false };
-  // Real-time overlay (Schwab): say how many names it covers right now.
-  const rt = status.realtime;
-  const source =
-    rt && rt.state === 'polling' && rt.liveTickers > 0
-      ? {
-          label: `Real-time · ${rt.liveTickers}`,
-          title: `Schwab real-time flow for ${rt.liveTickers} names; the rest, and all IV/OI analytics, ${base.title}`,
-          warn: false,
-        }
-      : base;
 
   return (
     <Link
@@ -89,4 +117,14 @@ export function MarketStatus(): JSX.Element {
       </span>
     </Link>
   );
+}
+
+/** "4:00 PM ET" for today, "Fri 4:00 PM ET" for an earlier day. */
+function dayTime(ms: number): string {
+  const et = (d: Date, o: Intl.DateTimeFormatOptions): string =>
+    new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', ...o }).format(d);
+  const d = new Date(ms);
+  const time = et(d, { hour: 'numeric', minute: '2-digit' });
+  const sameDay = et(d, { dateStyle: 'short' }) === et(new Date(), { dateStyle: 'short' });
+  return sameDay ? `${time} ET` : `${et(d, { weekday: 'short' })} ${time} ET`;
 }

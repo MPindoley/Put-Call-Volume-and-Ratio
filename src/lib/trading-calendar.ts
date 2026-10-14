@@ -157,6 +157,41 @@ export function inCaptureWindow(now = new Date(), delayMin = 20, windowMin = 30)
   return minutes >= start && minutes < start + windowMin;
 }
 
+/** True once `now` is past today's close + delayMin (ET), on a trading day. */
+export function pastCaptureStart(now = new Date(), delayMin = 20): boolean {
+  const { year, month, day, minutes } = etParts(now);
+  const close = closeMinutesEt(year, month, day);
+  return close !== null && minutes >= close + delayMin;
+}
+
+/** Epoch ms of an ET wall-clock time (minutes after midnight) on a date. DST-aware. */
+export function etWallTimeToEpoch(year: number, month: number, day: number, minutes: number): number {
+  for (const offsetHours of [4, 5]) {
+    const t = Date.UTC(year, month - 1, day) + (minutes + offsetHours * 60) * 60_000;
+    const p = etParts(new Date(t));
+    if (p.year === year && p.month === month && p.day === day && p.minutes === minutes) return t;
+  }
+  return Date.UTC(year, month - 1, day) + (minutes + 300) * 60_000;
+}
+
+/**
+ * The most recent regular-session close at or before `now` (epoch ms): today's
+ * once the bell has rung, else the previous trading day's (weekends, holidays
+ * and early closes respected). Null if none within ten days.
+ */
+export function lastSessionClose(now = new Date()): number | null {
+  const today = etParts(now);
+  for (let back = 0; back < 10; back++) {
+    // Noon UTC of each earlier calendar date is the same date in ET.
+    const d = etParts(new Date(Date.UTC(today.year, today.month - 1, today.day - back, 12)));
+    const close = closeMinutesEt(d.year, d.month, d.day);
+    if (close === null) continue;
+    const t = etWallTimeToEpoch(d.year, d.month, d.day, close);
+    if (t <= now.getTime()) return t;
+  }
+  return null;
+}
+
 /** ET calendar date (midnight UTC-stamped) for keying daily rows. */
 export function etDateKey(now = new Date()): Date {
   const { year, month, day } = etParts(now);

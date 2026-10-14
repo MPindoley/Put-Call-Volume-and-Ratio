@@ -15,6 +15,7 @@
 import type { RawContract } from '@/types';
 import type { OptionsChainAggregate, OptionsDataProvider } from './provider';
 import { PermanentError, TokenBucket, withBackoff } from './rate-limiter';
+import { etDateKey, lastSessionClose } from './trading-calendar';
 
 const BASE = 'https://cdn.cboe.com/api/global/delayed_quotes';
 
@@ -71,11 +72,21 @@ export const MAX_SNAPSHOT_AGE_MS = 5 * 86_400_000;
  */
 export const CBOE_DELAY_MS = 15 * 60_000;
 
-/** Market time a snapshot reflects: generation time minus the delay; null when unknown. */
+/**
+ * Market time a snapshot reflects: generation time minus the delay; null when
+ * unknown. After the bell the CDN keeps regenerating the same closing snapshot
+ * (new timestamp, unchanged figures), so a time past that day's close is the
+ * close: otherwise each re-stamp would read as a newer snapshot with zero
+ * volume — a false lull — and the data would claim to be from after 4 PM.
+ */
 export function snapshotDataTime(timestamp: string | undefined): number | null {
   if (!timestamp) return null;
   const ms = Date.parse(`${timestamp.replace(' ', 'T')}Z`);
-  return Number.isFinite(ms) ? ms - CBOE_DELAY_MS : null;
+  if (!Number.isFinite(ms)) return null;
+  const raw = ms - CBOE_DELAY_MS;
+  const close = lastSessionClose(new Date(raw));
+  const sameDay = close !== null && etDateKey(new Date(raw)).getTime() === etDateKey(new Date(close)).getTime();
+  return close !== null && sameDay && raw > close ? close : raw;
 }
 
 /**

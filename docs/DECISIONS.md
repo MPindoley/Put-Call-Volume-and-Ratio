@@ -120,6 +120,31 @@ to move one price was the largest stream. The Yahoo sweep covers the hot set
 every minute and the whole universe every 5 minutes, keeping its request rate
 near the old 552-name sweep.
 
+### 0.10a Restart safety: saved table, after-hours catch-up, capture guard
+The scanner table lives in memory, and a deploy restarts the process. Three
+measures keep a restart from costing data (`engine-snapshot.ts`, `poller.ts`,
+`history-jobs.ts`):
+- **Saved table.** Every row and projection is saved (one gzip'd row,
+  ~3 MB for ~1,400 names) every 10 minutes while polling, at the close, after
+  a catch-up and at shutdown, and restored before anything polls. Rows keep
+  their own data times; no feed state is restored, so the next live snapshot
+  starts a fresh measurement window (no delta against a snapshot this process
+  never saw).
+- **After-hours catch-up.** A start while the market is closed refreshes, once,
+  every name whose data predates the last session's close (minus 20 min) —
+  the feed still serves the closing snapshot — then idles. CBOE re-stamps that
+  snapshot after the bell, so a data time past the close is pinned to the close.
+- **Capture guard.** The pinned end-of-day capture refuses to pin a day while
+  fewer than half the universe holds that session's data (a finalized row is
+  never re-captured, so a partial pin would be permanent). After a catch-up,
+  a late capture runs if the window was missed (same ET date only; after the
+  close the values are the ones the window would have seen).
+- **One regime exception.** A final regime row written before its day was
+  captured (no gamma input while the day's captured GEX exists) is rebuilt
+  once; every properly captured row stays immutable (4.2).
+**If reversed:** a deploy just after the close loses the day's capture and
+writes a regime row from yesterday's SPY close — permanently.
+
 ### 0.10 Schwab real-time is a FLOW overlay; CBOE stays the analytics of record
 With the operator's Schwab connection (`schwab-auth.ts`, `schwab.ts`,
 `realtime-feed.ts`), a second loop fetches real-time chains for a hot set

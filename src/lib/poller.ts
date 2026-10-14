@@ -31,8 +31,9 @@ import { RealtimeFeed } from './realtime-feed';
 import { SchwabClient } from './schwab';
 import { getSchwabAuth } from './schwab-auth';
 import { FlowSimulator } from './simulator';
-import { isTradingDayNow } from './trading-calendar';
-import { planRefresh, type RefreshCandidate } from './refresh-schedule';
+import { isTradingDayNow, lastSessionClose } from './trading-calendar';
+import { planRefresh, staleForClose, type RefreshCandidate } from './refresh-schedule';
+import { restoreEngineSnapshot, saveEngineSnapshot, SNAPSHOT_EVERY_MS } from './engine-snapshot';
 import { BENCHMARKS, TRACKED_UNIVERSE } from './universe';
 import { isMarketHours } from './utils';
 import { tryDb, dbAvailable } from './db';
@@ -65,6 +66,13 @@ export class Poller {
   private edgarTask: cron.ScheduledTask | null = null;
   /** Schwab real-time overlay for the hot set (realtime-feed.ts); null when not configured. */
   private realtime: RealtimeFeed | null = null;
+  /** Resolves once the saved table is restored and any catch-up is planned; cycles wait on it. */
+  private ready: Promise<void> = Promise.resolve();
+  /** Names still to refresh in an after-hours catch-up to the last close; null when none is running. */
+  private catchUp: Set<string> | null = null;
+  private lastSnapshotAt = Date.now();
+  /** The session just ended while polling: save the table's closing state once. */
+  private saveAtClose = false;
 
   constructor(private io: IO | null) {
     this.engine = getFlowEngine();
@@ -83,6 +91,11 @@ export class Poller {
 
     // Every fired alert is persisted for the accuracy scoreboard.
     this.engine.onAlert((alert) => void persistAlert(alert));
+
+    // Restore the last saved table before anything polls or captures, and plan
+    // an after-hours catch-up if it does not hold the last session's close.
+    this.lastSnapshotAt = Date.now();
+    this.ready = this.prepare().catch((err) => console.error('[poller] restore failed:', err));
 
     void this.loadStoredState().then(async () => {
       await backfillCloseHistory(this.engine);
@@ -296,15 +309,51 @@ export class Poller {
     if (process.env.POLL_WHEN_CLOSED === '1') return false;
     const open = isMarketHours() && isTradingDayNow();
     if (open !== this.marketWasOpen) {
+      if (this.marketWasOpen === true && !open) this.saveAtClose = true;
       this.marketWasOpen = open;
       console.log(`[poller] market ${open ? 'open — polling' : 'closed — idling until the next session'}`);
     }
     return !open;
   }
 
+  /**
+   * Restore the saved table (engine-snapshot.ts). If the market is closed and
+   * rows are missing or older than the last session's close — a first start,
+   * or a restart after the close with no fresh save — plan one catch-up pass:
+   * the feed still serves the closing snapshot, so the evening table, the
+   * ticker pages and the end-of-day capture all get the real close.
+   */
+  private async prepare(): Promise<void> {
+    if (this.engine.mode !== 'live') return;
+    await restoreEngineSnapshot(this.engine);
+    if (process.env.POLL_WHEN_CLOSED === '1' || (isMarketHours() && isTradingDayNow())) return;
+    const close = lastSessionClose();
+    if (close === null) return;
+    const stale = staleForClose(
+      TRACKED_UNIVERSE.map((u) => u.symbol),
+      (symbol) => this.engine.getFlow(symbol)?.dataAsOf ?? 0,
+      close,
+    );
+    if (stale.length === 0) return;
+    this.catchUp = new Set(stale);
+    this.engine.catchUpRemaining = stale.length;
+    console.log(
+      `[poller] market closed — catching ${stale.length} names up to the ${new Date(close).toISOString()} close, then idling`,
+    );
+  }
+
   private async cycle(): Promise<void> {
     if (this.running) return; // never overlap slow cycles
+    await this.ready;
     if (this.shouldIdle()) {
+      if (this.catchUp && this.catchUp.size > 0) {
+        await this.catchUpCycle();
+        return;
+      }
+      if (this.saveAtClose) {
+        this.saveAtClose = false;
+        await saveEngineSnapshot(this.engine, 'market close');
+      }
       // Keep clients connected and showing "Market closed"; skip the fetch.
       this.io?.emit('connection-status', this.engine.status());
       return;
@@ -317,12 +366,41 @@ export class Poller {
 
       await this.refreshMarketContext();
       await this.publish(updated);
+      if (Date.now() - this.lastSnapshotAt >= SNAPSHOT_EVERY_MS) {
+        this.lastSnapshotAt = Date.now();
+        await saveEngineSnapshot(this.engine, 'routine');
+      }
     } catch (err) {
       console.error('[poller] cycle failed:', err);
     } finally {
       this.running = false;
       const elapsed = Date.now() - startedAt;
       if (elapsed > 5_000) console.log(`[poller] cycle took ${elapsed}ms`);
+    }
+  }
+
+  /** One batch of the after-hours catch-up; on the last, save and capture the day if it was missed. */
+  private async catchUpCycle(): Promise<void> {
+    const pending = this.catchUp;
+    if (!pending) return;
+    this.running = true;
+    try {
+      const updated = await this.liveCycle(pending);
+      await this.refreshMarketContext();
+      await this.publish(updated);
+      this.engine.catchUpRemaining = pending.size;
+      if (pending.size === 0) {
+        this.catchUp = null;
+        console.log('[poller] caught up to the last close — idling until the next session');
+        await saveEngineSnapshot(this.engine, 'after-hours catch-up');
+        // A restart just after the close leaves the regular capture window to an
+        // empty table (the coverage guard refuses it); capture the day now.
+        await maybeCaptureEndOfDay(this.engine, { late: true });
+      }
+    } catch (err) {
+      console.error('[poller] catch-up cycle failed:', err);
+    } finally {
+      this.running = false;
     }
   }
 
@@ -379,14 +457,15 @@ export class Poller {
     });
   }
 
-  private async liveCycle(): Promise<TickerFlow[]> {
+  /** One batch of chain refreshes; with `only`, just those names (each attempt removes it from the set). */
+  private async liveCycle(only?: Set<string>): Promise<TickerFlow[]> {
     const provider = getDataProvider();
     if (!provider) return [];
     const intervalSec = Math.max(15, Number(process.env.POLL_INTERVAL_SEC ?? 30));
     // Spend at most this cycle's share of the per-minute budget, so the
     // queue never grows unboundedly on constrained plans.
     const budget = Math.max(1, Math.floor((provider.bucket.currentPerMinute * intervalSec) / 60));
-    const batch = this.pickBatch(budget);
+    const batch = this.pickBatch(budget, only);
 
     const updated: TickerFlow[] = [];
     let cursor = 0;
@@ -398,6 +477,7 @@ export class Poller {
         // otherwise stay "never fetched" — the most overdue name there is — and
         // be picked first on every cycle forever, wasting a slot and a token.
         this.lastFetched.set(item.symbol, Date.now());
+        only?.delete(item.symbol);
         try {
           const agg = await provider.getOptionsFlowSnapshot(item.symbol, item.priority);
           updated.push(this.engine.ingest(agg));
@@ -416,10 +496,11 @@ export class Poller {
    * source's rate budget — so the universe can grow without every name waiting
    * a full lap.
    */
-  private pickBatch(budget: number): { symbol: string; priority: number }[] {
+  private pickBatch(budget: number, only?: ReadonlySet<string>): { symbol: string; priority: number }[] {
     const provider = getDataProvider();
     const watch = new Set(this.engine.settings.watchlist);
-    const candidates: RefreshCandidate[] = TRACKED_UNIVERSE.map(({ symbol }) => {
+    const universe = only ? TRACKED_UNIVERSE.filter(({ symbol }) => only.has(symbol)) : TRACKED_UNIVERSE;
+    const candidates: RefreshCandidate[] = universe.map(({ symbol }) => {
       const flow = this.engine.getFlow(symbol);
       return {
         symbol,

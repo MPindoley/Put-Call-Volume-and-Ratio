@@ -145,3 +145,18 @@ export function planRefresh(
   );
   return scored.slice(0, budget).map(({ symbol, priority }) => ({ symbol, priority }));
 }
+
+/**
+ * Names whose data predates a session's close by more than `slackMs` (or that
+ * have none) — what an after-hours catch-up must refresh. The slack keeps names
+ * refreshed in the session's last minutes, whose figures are the close in all
+ * but name, from being fetched again.
+ */
+export function staleForClose(
+  symbols: readonly string[],
+  dataAsOf: (symbol: string) => number,
+  closeMs: number,
+  slackMs = 20 * MIN,
+): string[] {
+  return symbols.filter((s) => dataAsOf(s) < closeMs - slackMs);
+}
