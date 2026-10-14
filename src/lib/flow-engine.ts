@@ -141,6 +141,8 @@ export class FlowEngine {
   dbConnected = false;
   /** Set by the poller's real-time loop when a real-time feed is configured. */
   realtimeFeed: RealtimeFeedInfo | null = null;
+  /** Names left in an after-hours catch-up pass (poller.ts); 0 when none is running. */
+  catchUpRemaining = 0;
   /** 20-day aggregate-ratio history for percentile ranking (loaded from DB). */
   historicalRatios: number[] = [];
 
@@ -500,7 +502,49 @@ export class FlowEngine {
       // the status bar and the health probe disagree on a market holiday.
       marketOpen: isMarketHours() && isTradingDayNow(),
       realtime: this.realtimeInfo(),
+      dataAsOf: this.latestDataAsOf(),
+      catchUpRemaining: this.catchUpRemaining,
     };
+  }
+
+  /** Newest market time any row reflects (0 when there are none). */
+  latestDataAsOf(): number {
+    let latest = 0;
+    for (const st of this.tickers.values()) if (st.flow.dataAsOf > latest) latest = st.flow.dataAsOf;
+    return latest;
+  }
+
+  /**
+   * Seed the engine from a saved snapshot (engine-snapshot.ts) after a restart,
+   * so the full table is served at once instead of rebuilding from empty.
+   * Rows keep their own data times, so their age shows honestly. A name that
+   * already has live data is left alone, and no feed state is restored: the
+   * next live snapshot starts a fresh measurement window, so a delta is never
+   * taken against a snapshot this process did not see.
+   */
+  restoreSnapshot(s: {
+    flows: TickerFlow[];
+    projections: Projection[];
+    aggregate: AggregateRatio | null;
+    sectors: SectorRatio[];
+    ratioSeries: RatioPoint[];
+    marketContext: MarketContext | null;
+  }): number {
+    let restored = 0;
+    for (const flow of s.flows) {
+      if (this.tickers.has(flow.symbol)) continue;
+      const st = this.initTicker(flow.symbol);
+      // The real-time overlay is not live in this process (yet).
+      st.flow = { ...st.flow, ...flow, realtime: false };
+      this.tickers.set(flow.symbol, st);
+      restored += 1;
+    }
+    for (const p of s.projections) if (!this.projections.has(p.symbol)) this.projections.set(p.symbol, p);
+    this.lastAggregate ??= s.aggregate;
+    if (this.sectors.length === 0) this.sectors = s.sectors;
+    if (this.ratioSeries.length === 0) this.ratioSeries = s.ratioSeries;
+    this.marketContext ??= s.marketContext;
+    return restored;
   }
 
   /** The real-time feed's state as the poller last reported it, with the live count now. */

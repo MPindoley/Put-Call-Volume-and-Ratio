@@ -248,6 +248,11 @@ follows automatically.
 6. Optional: `SITE_PASSWORD` to lock the site, then the Schwab variables for
    real-time flow ([`docs/SCHWAB-SETUP.md`](docs/SCHWAB-SETUP.md)).
 
+Deploys restart the server. With a database, the scanner table is saved every
+few minutes and restored on start, so a restart serves the full table at once;
+a start while the market is closed also catches every name up to the last
+close (busiest first, ~15–20 minutes for the whole universe) before idling.
+
 ## Roadmap / not yet implemented
 
 - Massive/Polygon WebSocket trade stream (needs their Advanced plan) for true

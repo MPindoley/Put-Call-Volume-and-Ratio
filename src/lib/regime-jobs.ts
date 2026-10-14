@@ -47,7 +47,20 @@ export async function recordDailyRegime(engine: FlowEngine, now = new Date()): P
     (await tryDb('record daily regime', async (db) => {
       const date = etDateKey(now);
       const existing = await db.dailyRegime.findUnique({ where: { date } });
-      if (existing?.final) return false; // immutable — never recomputed
+      if (existing?.final) {
+        // Immutable — never recomputed. One exception: a row written before the
+        // day's session was captured (an empty end-of-day capture right after a
+        // restart) has no gamma input and a stale trend input. A live-captured
+        // day always has gamma, so "gamma missing while the day's captured GEX
+        // now exists" identifies exactly that row; it is rebuilt once, from the
+        // real inputs, and is immutable from then on.
+        if (existing.aggGex !== null) return false;
+        const capturedWithGex = await db.dailyMetric.count({
+          where: { date, final: true, seeded: false, historicalCloseOnly: false, gex: { not: null } },
+        });
+        if (capturedWithGex === 0) return false;
+        console.warn(`[regime] ${date.toISOString().slice(0, 10)}: row was written before the session was captured — rebuilding it once`);
+      }
 
       // Vol input.
       const vixSpread = engine.marketContext?.vixSpread ?? null;

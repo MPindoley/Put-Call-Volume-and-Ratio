@@ -5,6 +5,8 @@ import {
   isEarlyClose,
   isMarketHoliday,
   isTradingDay,
+  lastSessionClose,
+  pastCaptureStart,
   tradingDaysBetween,
 } from './trading-calendar';
 
@@ -90,5 +92,35 @@ describe('closeMinutesEt', () => {
   });
   it('holiday → null', () => {
     expect(closeMinutesEt(2025, 12, 25)).toBeNull();
+  });
+});
+
+describe('lastSessionClose', () => {
+  const iso = (ms: number | null): string | null => (ms === null ? null : new Date(ms).toISOString());
+  it("is today's 16:00 ET once the bell has rung (EDT = 20:00 UTC)", () => {
+    expect(iso(lastSessionClose(new Date('2026-10-14T21:10:00Z')))).toBe('2026-10-14T20:00:00.000Z');
+  });
+  it("is the previous session's close before the open", () => {
+    expect(iso(lastSessionClose(new Date('2026-10-14T12:00:00Z')))).toBe('2026-10-13T20:00:00.000Z');
+  });
+  it('skips the weekend (Saturday → Friday)', () => {
+    expect(iso(lastSessionClose(new Date('2026-10-17T15:00:00Z')))).toBe('2026-10-16T20:00:00.000Z');
+  });
+  it('uses 16:00 EST (21:00 UTC) in winter and honors early closes', () => {
+    expect(iso(lastSessionClose(new Date('2026-01-07T23:00:00Z')))).toBe('2026-01-07T21:00:00.000Z');
+    // Friday after Thanksgiving 2025 closes at 13:00 ET.
+    expect(iso(lastSessionClose(new Date('2025-11-28T20:00:00Z')))).toBe('2025-11-28T18:00:00.000Z');
+  });
+  it('skips a market holiday (Christmas → Dec 24 early close)', () => {
+    expect(iso(lastSessionClose(new Date('2025-12-25T20:00:00Z')))).toBe('2025-12-24T18:00:00.000Z');
+  });
+});
+
+describe('pastCaptureStart', () => {
+  it('turns true at close + delay on a trading day only', () => {
+    expect(pastCaptureStart(new Date('2026-10-14T20:19:00Z'), 20)).toBe(false);
+    expect(pastCaptureStart(new Date('2026-10-14T20:20:00Z'), 20)).toBe(true);
+    expect(pastCaptureStart(new Date('2026-10-14T23:59:00Z'), 20)).toBe(true);
+    expect(pastCaptureStart(new Date('2026-10-17T22:00:00Z'), 20)).toBe(false); // Saturday
   });
 });

@@ -14,7 +14,7 @@
  *  pruneHistory     — retention: snapshots 35d, ratio points 90d, alerts 120d.
  */
 import type { PrismaClient } from '@prisma/client';
-import type { SpikeAlert } from '@/types';
+import type { SpikeAlert, TickerFlow } from '@/types';
 import { getAnalyticsConfig } from './analytics-config';
 import { historicalVol, ivRank } from './chain-analytics';
 import { CboeClient } from './cboe';
@@ -30,7 +30,7 @@ import type { FlowEngine } from './flow-engine';
 import { finalizeDailyCapture, loadLatestIntoEngine } from './sector-analytics';
 import { NOT_SEEDED } from './seed-guard';
 import { DEFAULT_INTRADAY_SHAPE } from './spike-detector';
-import { etDateKey, inCaptureWindow, isTradingDayNow } from './trading-calendar';
+import { etDateKey, inCaptureWindow, isTradingDayNow, pastCaptureStart } from './trading-calendar';
 import { TRACKED_UNIVERSE } from './universe';
 
 const DAY_MS = 86_400_000;
@@ -217,6 +217,9 @@ export async function recordDailyMetrics(engine: FlowEngine): Promise<void> {
     );
     for (const flow of engine.allFlows()) {
       if (flow.lastUpdated === 0 || finalizedToday.has(flow.symbol)) continue;
+      // Only rows holding today's session: a row restored from an earlier
+      // session's saved table must not be filed under today's date.
+      if (etDateKey(new Date(flow.dataAsOf)).getTime() !== today.getTime()) continue;
       const optVolume = flow.sessionPutVolume + flow.sessionCallVolume;
       const data = {
         iv30: flow.iv30,
@@ -294,32 +297,82 @@ export async function backfillCloseHistory(engine: FlowEngine, budget = 80): Pro
 }
 
 /**
+ * Share of the universe that must hold data from today's session before the
+ * day is pinned. The capture reads the in-memory table; right after a restart
+ * that table can be empty or half-filled, and pinning it would make the day's
+ * history permanently partial (a finalized row is never re-captured).
+ */
+export const MIN_CAPTURE_COVERAGE = 0.5;
+
+/** How many rows carry data from the given ET session. */
+export function sessionCoverage(flows: readonly TickerFlow[], day: Date): number {
+  const key = day.getTime();
+  return flows.filter((f) => f.dataAsOf > 0 && etDateKey(new Date(f.dataAsOf)).getTime() === key).length;
+}
+
+/**
  * Fire the pinned end-of-day capture once per session, gated on the trading
  * calendar and the post-close ET window. Idempotent: a second call after
  * today is already finalized is a cheap no-op.
+ *
+ * `late`: an after-hours catch-up pass (poller.ts) just refilled the table
+ * with the session's closing data, so capture now if the regular window was
+ * missed — same ET date only. The values are the same the window would have
+ * seen: after the close the feed's snapshot no longer changes.
  */
-export async function maybeCaptureEndOfDay(engine: FlowEngine): Promise<boolean> {
-  if (engine.mode !== 'simulated' && !isTradingDayNow()) return false;
-  const config = await getAnalyticsConfig();
-  if (!inCaptureWindow(new Date(), config.captureDelayMin, config.captureWindowMin)) return false;
+let capturing = false;
 
-  const today = etDateKey();
+export async function maybeCaptureEndOfDay(
+  engine: FlowEngine,
+  opts: { now?: Date; late?: boolean } = {},
+): Promise<boolean> {
+  // The scheduled check and a catch-up's late capture can coincide: one at a time.
+  if (capturing) return false;
+  capturing = true;
+  try {
+    return await captureEndOfDay(engine, opts);
+  } finally {
+    capturing = false;
+  }
+}
+
+async function captureEndOfDay(engine: FlowEngine, opts: { now?: Date; late?: boolean }): Promise<boolean> {
+  const now = opts.now ?? new Date();
+  if (engine.mode !== 'simulated' && !isTradingDayNow(now)) return false;
+  const config = await getAnalyticsConfig();
+  const inWindow = inCaptureWindow(now, config.captureDelayMin, config.captureWindowMin);
+  const late = opts.late === true && pastCaptureStart(now, config.captureDelayMin);
+  if (!inWindow && !late) return false;
+
+  const today = etDateKey(now);
   const alreadyFinal = await tryDb('check finalized', (db) =>
     db.dailyMetric.findFirst({ where: { date: today, final: true, historicalCloseOnly: false } }),
   );
   if (alreadyFinal) return false;
 
-  console.log('[eod] capturing pinned end-of-day snapshot…');
-  const ok = await finalizeDailyCapture(engine);
+  if (engine.mode !== 'simulated') {
+    const covered = sessionCoverage(engine.allFlows(), today);
+    const needed = Math.ceil(TRACKED_UNIVERSE.length * MIN_CAPTURE_COVERAGE);
+    if (covered < needed) {
+      console.warn(
+        `[eod] only ${covered}/${TRACKED_UNIVERSE.length} names hold today's data — not pinning a partial day ` +
+          '(the after-hours catch-up captures once the table is refilled)',
+      );
+      return false;
+    }
+  }
+
+  console.log(`[eod] capturing pinned end-of-day snapshot${late && !inWindow ? ' (late: after a catch-up pass)' : ''}…`);
+  const ok = await finalizeDailyCapture(engine, now);
   if (ok) {
     // Regime state depends on the finalized SPY close + per-ticker GEX just written;
     // signals fire only once the regime row is final (never on provisional data).
-    await recordDailyRegime(engine);
-    const emitted = await logSignals(engine);
-    await trackBackwardationEpisodes();
+    await recordDailyRegime(engine, now);
+    const emitted = await logSignals(engine, now);
+    await trackBackwardationEpisodes(now);
     if (emitted > 0) console.log(`[signals] logged ${emitted} signals for today's session`);
     // Weekly: today's implied ranges, to be graded at their expiries.
-    await logProjections(engine);
+    await logProjections(engine, now);
   }
   return ok;
 }

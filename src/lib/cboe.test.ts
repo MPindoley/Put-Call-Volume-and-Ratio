@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_SNAPSHOT_AGE_MS, parseOcc, snapshotAgeMs } from './cboe';
+import { MAX_SNAPSHOT_AGE_MS, parseOcc, snapshotAgeMs, snapshotDataTime } from './cboe';
 
 /**
  * Delisted names are the motivating case: CBOE serves their last snapshot
@@ -54,5 +54,21 @@ describe('parseOcc', () => {
   it('rejects malformed input rather than guessing', () => {
     expect(parseOcc('SHORT')).toBeNull();
     expect(parseOcc('AAPL260117X00150000')).toBeNull(); // not C/P
+  });
+});
+
+describe('snapshotDataTime', () => {
+  const iso = (v: number | null): string | null => (v === null ? null : new Date(v).toISOString());
+  it('is the generation time minus the 15-minute delay during the session', () => {
+    expect(iso(snapshotDataTime('2026-10-14 18:30:00'))).toBe('2026-10-14T18:15:00.000Z');
+  });
+  it('pins re-stamped closing snapshots to the close (16:00 ET = 20:00 UTC)', () => {
+    expect(iso(snapshotDataTime('2026-10-14 20:29:45'))).toBe('2026-10-14T20:00:00.000Z');
+    expect(iso(snapshotDataTime('2026-10-14 23:50:00'))).toBe('2026-10-14T20:00:00.000Z');
+  });
+  it('leaves a snapshot reaching exactly the close, and unknown stamps, alone', () => {
+    expect(iso(snapshotDataTime('2026-10-14 20:15:00'))).toBe('2026-10-14T20:00:00.000Z');
+    expect(snapshotDataTime(undefined)).toBeNull();
+    expect(snapshotDataTime('garbage')).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import {
   DEFAULT_SCHEDULE,
   MIN_INTERVAL_MS,
   planRefresh,
+  staleForClose,
   targetIntervals,
   type RefreshCandidate,
 } from './refresh-schedule';
@@ -146,5 +147,13 @@ describe('planRefresh', () => {
     u[50] = { ...u[50]!, watch: true, lastFetched: NOW - 10 * MIN };
     const item = planRefresh(u, 100, 60, NOW).find((p) => p.symbol === 'S0050');
     expect(item?.priority).toBe(1);
+  });
+});
+
+describe('staleForClose', () => {
+  it('picks names with no data or data from before the close (minus slack)', () => {
+    const close = Date.UTC(2026, 9, 14, 20, 0);
+    const asOf: Record<string, number> = { A: close, B: close - 10 * 60_000, C: close - 30 * 60_000, D: 0 };
+    expect(staleForClose(['A', 'B', 'C', 'D', 'E'], (s) => asOf[s] ?? 0, close)).toEqual(['C', 'D', 'E']);
   });
 });

@@ -553,6 +553,18 @@ model UserSettings {
   updatedAt          DateTime @updatedAt
 }
 
+/// The live engine's latest state — every scanner row and market-implied
+/// projection — saved every few minutes, at the close and after a catch-up
+/// pass, so a restart (deploy, crash) serves the full table at once instead of
+/// rebuilding from empty. One row, gzip-compressed JSON (engine-snapshot.ts).
+model EngineSnapshot {
+  id      Int      @id @default(1)
+  savedAt DateTime
+  version Int
+  rows    Int
+  payload Bytes
+}
+
 /// Each name's market-implied range (projection.ts), logged once a week at the
 /// pinned end-of-day capture for two horizons (~7 and ~30 days), and graded with
 /// the settled close at expiry (projection-jobs.ts). The projection's own track
