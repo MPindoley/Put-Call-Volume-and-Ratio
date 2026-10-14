@@ -238,6 +238,12 @@ export interface TickerFlow {
   dataAsOf: number;
   /** Data time the 5-minute figures were measured over (ms), or null when there is too little yet. */
   flowWindowMs: number | null;
+  /**
+   * The flow figures (volumes, P/C, premium, spike) come from the real-time
+   * broker feed (Schwab) rather than the delayed chain. Analytics (IV, skew,
+   * OI, GEX) always come from the delayed feed of record.
+   */
+  realtime: boolean;
   /** Direction of the most recent net-flow delta, used for row flashing. */
   lastDelta: 'bullish' | 'bearish' | 'none';
 }
@@ -344,6 +350,47 @@ export interface ConnectionStatus {
   rateLimitPerMinute: number;
   dbConnected: boolean;
   marketOpen: boolean;
+  /** Real-time overlay feed, when one is configured (null otherwise). */
+  realtime: RealtimeFeedInfo | null;
+}
+
+/** The real-time overlay feed (Schwab) as the poller last saw it. */
+export interface RealtimeFeedInfo {
+  source: 'schwab';
+  /**
+   * polling: fetching real-time chains · idle: market closed ·
+   * signed-out: never connected or disconnected · expired: the weekly sign-in lapsed ·
+   * unlocked: SITE_PASSWORD is not set, so real-time polling stays off.
+   */
+  state: 'polling' | 'idle' | 'signed-out' | 'expired' | 'unlocked';
+  /** Names whose flow figures currently come from the real-time feed. */
+  liveTickers: number;
+  /** Names the real-time loop is rotating through. */
+  hotSetSize: number;
+  lastFetchAt: number;
+  callsLastMinute: number;
+  perMinute: number;
+  /** Schwab served delayed data (the account lacks real-time options entitlement). */
+  delayed: boolean;
+  lastError: string | null;
+  /** Names Schwab could not serve this session (chain too large or none); CBOE covers them. */
+  unsupported: number;
+  /** When the owner must sign in to Schwab again. */
+  reconnectBy: number | null;
+}
+
+/** GET /api/schwab/status — never includes a token. */
+export interface SchwabStatusResponse {
+  configured: boolean;
+  siteLocked: boolean;
+  callbackUrl: string | null;
+  state: 'unconfigured' | 'disconnected' | 'connected' | 'expired';
+  authorizedAt: number | null;
+  reconnectBy: number | null;
+  lastError: string | null;
+  /** False without a database: a restart forgets the sign-in. */
+  persisted: boolean;
+  feed: RealtimeFeedInfo | null;
 }
 
 export interface AppSettings {

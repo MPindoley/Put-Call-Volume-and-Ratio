@@ -18,6 +18,7 @@ import type {
   IdiosyncraticMove,
   MarketContext,
   RatioPoint,
+  RealtimeFeedInfo,
   SectorDispersion,
   SectorRatio,
   SectorRelative,
@@ -43,7 +44,11 @@ const SPARKLINE_POINTS = 30; // 1-min resolution, 30 minutes
 const MAX_ALERTS = 200;
 const RATIO_SERIES_MAX = 500;
 
-interface TickerState {
+/** How long a real-time snapshot keeps the delayed feed's flow figures off a row. */
+export const REALTIME_FRESH_MS = 10 * 60_000;
+
+/** One feed's view of a ticker's session: its cumulative totals and the deltas between them. */
+interface SourceState {
   /**
    * Last cumulative snapshot, for delta derivation. Stored WITHOUT its contract
    * list: only the totals are needed, and holding every chain's contracts for
@@ -55,7 +60,30 @@ interface TickerState {
   /** Deltas between successive snapshots, on the data clock (ascending). */
   intervals: FlowInterval[];
   sparkline: { t: number; ratio: number }[];
+  /** Fetch time of the last snapshot that carried new data (0 = never). */
+  receivedAt: number;
+}
+
+/**
+ * Each feed keeps its own session state, so a delta is only ever taken between
+ * two snapshots of the SAME feed: Schwab's and CBOE's counts of the same
+ * session differ slightly, and a cross-feed delta would read that difference
+ * as trading.
+ */
+interface TickerState {
+  /** The feed of record (CBOE / Massive / simulator): analytics always; flow when no real-time. */
+  primary: SourceState;
+  /** Real-time overlay (Schwab): flow figures only, while fresh. */
+  realtime: SourceState;
   flow: TickerFlow;
+}
+
+/** A feed's measured window: rates, ratio and data time. */
+interface Measured {
+  w: ReturnType<typeof windowFlow>;
+  ratio: number;
+  asOf: number;
+  sparkline: number[];
 }
 
 export type AlertListener = (alert: SpikeAlert) => void;
@@ -100,11 +128,14 @@ export class FlowEngine {
   mode: DataSourceMode = 'simulated';
   lastPollAt = 0;
   dbConnected = false;
+  /** Set by the poller's real-time loop when a real-time feed is configured. */
+  realtimeFeed: RealtimeFeedInfo | null = null;
   /** 20-day aggregate-ratio history for percentile ranking (loaded from DB). */
   historicalRatios: number[] = [];
 
   /**
-   * Ingest a cumulative snapshot for one ticker. Returns the updated row.
+   * Ingest a cumulative snapshot from the feed of record for one ticker.
+   * Returns the updated row.
    *
    * `now` is when it was fetched; `agg.asOf` is the market moment it reflects
    * (a delayed feed lags the fetch, and a CDN can hand back a snapshot that is
@@ -112,70 +143,23 @@ export class FlowEngine {
    * the last one carries no new information and is not counted again — it
    * would otherwise log a zero-volume interval (a false lull) and count as a
    * second confirming cycle for a spike that never re-occurred.
+   *
+   * While the real-time feed covers this name (ingestRealtime), its flow
+   * figures stay on the row and spike detection runs on its clock alone; this
+   * snapshot still refreshes every analytic and advances its own session
+   * state, so handing back to the delayed feed is seamless.
    */
   ingest(agg: OptionsChainAggregate, now = Date.now()): TickerFlow {
     const st = this.tickers.get(agg.symbol) ?? this.initTicker(agg.symbol);
     const asOf = agg.asOf ?? now;
 
-    const prev = st.cumulative;
-    const sameDay =
-      prev !== null && etDateKey(new Date(asOf)).getTime() === etDateKey(new Date(st.cumulativeAt)).getTime();
-    if (prev !== null && sameDay && asOf <= st.cumulativeAt) {
+    if (!this.advance(st.primary, agg, asOf, now)) {
       st.flow = { ...st.flow, lastUpdated: now };
       this.tickers.set(agg.symbol, st);
       return st.flow;
     }
-    // A new ET date, or day volumes falling on a NEWER snapshot, means a new session.
-    const newSession =
-      prev !== null && (!sameDay || agg.putVolume + agg.callVolume < prev.putVolume + prev.callVolume);
-
-    if (newSession) st.intervals = [];
-    else if (prev !== null) {
-      st.intervals.push({
-        start: st.cumulativeAt,
-        end: asOf,
-        putVolume: Math.max(0, agg.putVolume - prev.putVolume),
-        callVolume: Math.max(0, agg.callVolume - prev.callVolume),
-        putPremium: Math.max(0, agg.putPremium - prev.putPremium),
-        callPremium: Math.max(0, agg.callPremium - prev.callPremium),
-      });
-      st.intervals = pruneIntervals(st.intervals);
-    }
-    st.cumulative = { ...agg, contracts: undefined };
-    st.cumulativeAt = asOf;
-
-    const w = windowFlow(st.intervals);
-    const { putVolume, callVolume, putPremium, callPremium } = w;
-
-    // Window ratio when the window measured flow; otherwise the session ratio.
-    const windowHasFlow = w.rawPutVolume + w.rawCallVolume > 0;
-    const ratio = windowHasFlow
-      ? putCallRatio(w.rawPutVolume, w.rawCallVolume)
-      : putCallRatio(agg.putVolume, agg.callVolume);
-
-    // Sparkline: at most one point per minute of data time.
-    const lastPoint = st.sparkline[st.sparkline.length - 1];
-    if (!lastPoint || asOf - lastPoint.t >= 60_000) {
-      st.sparkline.push({ t: asOf, ratio });
-      if (st.sparkline.length > SPARKLINE_POINTS) st.sparkline.shift();
-    } else {
-      lastPoint.ratio = ratio;
-    }
-
-    // Expected-volume curves are by time of day: judge the session volume
-    // against the moment it reflects, not the (later) moment it arrived.
-    const spike = this.detector.evaluate(
-      {
-        symbol: agg.symbol,
-        sessionVolume: agg.putVolume + agg.callVolume,
-        rollingPremium: putPremium + callPremium,
-        rollingContracts: putVolume + callVolume,
-        putCallRatio: ratio,
-        largestContractVolume: agg.largestContractVolume,
-      },
-      this.settings,
-      new Date(asOf),
-    );
+    const m = this.measure(st.primary, agg, asOf);
+    const flow = this.realtimeLive(st, now) ? null : this.flowFields(agg, m, now, false);
 
     // Chain analytics: simulator supplies them; live providers pass contracts.
     const analytics =
@@ -202,31 +186,16 @@ export class FlowEngine {
         ? buildEventGauge(eventInput, agg.contracts, agg.underlyingPrice, new Date(now))
         : null;
 
-    const netFlow = callVolume - putVolume;
     st.flow = {
+      // The previous row supplies what this snapshot does not set: the live
+      // quote (the quote sweep runs on its own, faster cadence) and, while the
+      // real-time feed covers the name, its flow figures.
+      ...st.flow,
+      ...(flow?.fields ?? {}),
       symbol: agg.symbol,
       sector: sectorOf(agg.symbol),
-      putVolume,
-      callVolume,
-      sessionPutVolume: agg.putVolume,
-      sessionCallVolume: agg.callVolume,
-      putCallRatio: ratio,
-      netFlow,
-      callPremium,
-      putPremium,
-      spikeLevel: spike.level,
-      spikeScore: spike.score,
-      volumeVsExpected: spike.volumeMultiple,
-      ratioSparkline: st.sparkline.map((p) => Number(p.ratio.toFixed(3))),
       underlyingPrice: agg.underlyingPrice,
       priceChangePct: agg.priceChangePct,
-      // The quote sweep runs on its own (much faster) cadence and rebuilds
-      // nothing here, so carry the last live quote across a chain refresh —
-      // otherwise the price would blank every time the rotation reaches this
-      // name. Reads the previous flow: the literal is evaluated before assign.
-      livePrice: st.flow?.livePrice ?? null,
-      livePriceChangePct: st.flow?.livePriceChangePct ?? null,
-      livePriceAt: st.flow?.livePriceAt ?? null,
       iv30: agg.iv30,
       iv30Change: agg.iv30Change,
       ivRank: ctx?.ivRank ?? analytics?.ivRank ?? null,
@@ -241,31 +210,155 @@ export class FlowEngine {
       eventGauge,
       idiosyncraticMoves: this.idiosyncraticMoves.get(agg.symbol) ?? [],
       lastUpdated: now,
-      dataAsOf: asOf,
-      flowWindowMs: w.coveredMs >= MIN_COVERAGE_MS ? Math.round(w.coveredMs) : null,
-      lastDelta: netFlow > 0 ? 'bullish' : netFlow < 0 ? 'bearish' : 'none',
     };
     this.tickers.set(agg.symbol, st);
-
-    if (spike.alertable && spike.consecutiveCycles === 2) {
-      // Fire once when a spike is first confirmed, not on every cycle after.
-      this.pushAlert({
-        id: `a${now}-${this.alertSeq++}`,
-        symbol: agg.symbol,
-        level: spike.level === 'normal' ? 'elevated' : spike.level,
-        message:
-          `${agg.symbol} volume ${spike.volumeMultiple.toFixed(1)}× expected — ` +
-          `${ratio > 1 ? 'put-heavy' : 'call-heavy'} (P/C ${ratio.toFixed(2)})` +
-          (spike.isBlockTrade ? ' · block trade' : ''),
-        volumeMultiple: Number(spike.volumeMultiple.toFixed(2)),
-        premium: Math.round(putPremium + callPremium),
-        contracts: putVolume + callVolume,
-        putCallRatio: Number(ratio.toFixed(3)),
-        createdAt: now,
-      });
-    }
-
+    if (flow?.alert) this.pushAlert(flow.alert);
     return st.flow;
+  }
+
+  /**
+   * Ingest a real-time snapshot (Schwab) for one ticker: flow figures and
+   * spike detection only, once this feed has measured a window of its own.
+   * Analytics stay on the feed of record; the underlying price goes to the
+   * live-price fields, like the quote sweep's.
+   */
+  ingestRealtime(agg: OptionsChainAggregate, now = Date.now(), priceAt: number | null = null): TickerFlow {
+    const st = this.tickers.get(agg.symbol) ?? this.initTicker(agg.symbol);
+    const asOf = agg.asOf ?? now;
+    if (!this.advance(st.realtime, agg, asOf, now)) return st.flow;
+
+    const at = priceAt ?? asOf;
+    const price =
+      agg.underlyingPrice > 0 && at >= (st.flow.livePriceAt ?? 0)
+        ? { livePrice: agg.underlyingPrice, livePriceChangePct: agg.priceChangePct, livePriceAt: at }
+        : {};
+    const live = this.realtimeLive(st, now);
+    const flow = live ? this.flowFields(agg, this.measure(st.realtime, agg, asOf), now, true) : null;
+    st.flow = { ...st.flow, ...price, ...(flow?.fields ?? {}), ...(live ? { lastUpdated: now } : {}) };
+    this.tickers.set(agg.symbol, st);
+    if (flow?.alert) this.pushAlert(flow.alert);
+    return st.flow;
+  }
+
+  /** The real-time feed has fresh data and a measured window for this name. */
+  private realtimeLive(st: TickerState, now: number): boolean {
+    const r = st.realtime;
+    return r.receivedAt > 0 && now - r.receivedAt < REALTIME_FRESH_MS && windowFlow(r.intervals).coveredMs >= MIN_COVERAGE_MS;
+  }
+
+  /** Advance one feed's session state; false when the snapshot carries nothing new. */
+  private advance(src: SourceState, agg: OptionsChainAggregate, asOf: number, now: number): boolean {
+    const prev = src.cumulative;
+    const sameDay =
+      prev !== null && etDateKey(new Date(asOf)).getTime() === etDateKey(new Date(src.cumulativeAt)).getTime();
+    if (prev !== null && sameDay && asOf <= src.cumulativeAt) return false;
+    // A new ET date, or day volumes falling on a NEWER snapshot, means a new session.
+    const newSession =
+      prev !== null && (!sameDay || agg.putVolume + agg.callVolume < prev.putVolume + prev.callVolume);
+
+    if (newSession) src.intervals = [];
+    else if (prev !== null) {
+      src.intervals.push({
+        start: src.cumulativeAt,
+        end: asOf,
+        putVolume: Math.max(0, agg.putVolume - prev.putVolume),
+        callVolume: Math.max(0, agg.callVolume - prev.callVolume),
+        putPremium: Math.max(0, agg.putPremium - prev.putPremium),
+        callPremium: Math.max(0, agg.callPremium - prev.callPremium),
+      });
+      src.intervals = pruneIntervals(src.intervals);
+    }
+    src.cumulative = { ...agg, contracts: undefined };
+    src.cumulativeAt = asOf;
+    src.receivedAt = now;
+    return true;
+  }
+
+  /** A feed's current window and ratio; advances its sparkline. */
+  private measure(src: SourceState, agg: OptionsChainAggregate, asOf: number): Measured {
+    const w = windowFlow(src.intervals);
+    // Window ratio when the window measured flow; otherwise the session ratio.
+    const ratio =
+      w.rawPutVolume + w.rawCallVolume > 0
+        ? putCallRatio(w.rawPutVolume, w.rawCallVolume)
+        : putCallRatio(agg.putVolume, agg.callVolume);
+
+    // Sparkline: at most one point per minute of data time.
+    const lastPoint = src.sparkline[src.sparkline.length - 1];
+    if (!lastPoint || asOf - lastPoint.t >= 60_000) {
+      src.sparkline.push({ t: asOf, ratio });
+      if (src.sparkline.length > SPARKLINE_POINTS) src.sparkline.shift();
+    } else {
+      lastPoint.ratio = ratio;
+    }
+    return { w, ratio, asOf, sparkline: src.sparkline.map((p) => Number(p.ratio.toFixed(3))) };
+  }
+
+  /**
+   * The flow half of a row from one feed's measurement, with spike detection.
+   * Only one feed per ticker runs this at a time, so the detector's
+   * consecutive-cycle count is never fed by two clocks at once.
+   */
+  private flowFields(
+    agg: OptionsChainAggregate,
+    m: Measured,
+    now: number,
+    realtime: boolean,
+  ): { fields: Partial<TickerFlow>; alert: SpikeAlert | null } {
+    const { putVolume, callVolume, putPremium, callPremium } = m.w;
+    const ratio = m.ratio;
+    // Expected-volume curves are by time of day: judge the session volume
+    // against the moment it reflects, not the (later) moment it arrived.
+    const spike = this.detector.evaluate(
+      {
+        symbol: agg.symbol,
+        sessionVolume: agg.putVolume + agg.callVolume,
+        rollingPremium: putPremium + callPremium,
+        rollingContracts: putVolume + callVolume,
+        putCallRatio: ratio,
+        largestContractVolume: agg.largestContractVolume,
+      },
+      this.settings,
+      new Date(m.asOf),
+    );
+    const netFlow = callVolume - putVolume;
+    const fields: Partial<TickerFlow> = {
+      putVolume,
+      callVolume,
+      sessionPutVolume: agg.putVolume,
+      sessionCallVolume: agg.callVolume,
+      putCallRatio: ratio,
+      netFlow,
+      callPremium,
+      putPremium,
+      spikeLevel: spike.level,
+      spikeScore: spike.score,
+      volumeVsExpected: spike.volumeMultiple,
+      ratioSparkline: m.sparkline,
+      dataAsOf: m.asOf,
+      flowWindowMs: m.w.coveredMs >= MIN_COVERAGE_MS ? Math.round(m.w.coveredMs) : null,
+      realtime,
+      lastDelta: netFlow > 0 ? 'bullish' : netFlow < 0 ? 'bearish' : 'none',
+    };
+    // Fire once when a spike is first confirmed, not on every cycle after.
+    const alert: SpikeAlert | null =
+      spike.alertable && spike.consecutiveCycles === 2
+        ? {
+            id: `a${now}-${this.alertSeq++}`,
+            symbol: agg.symbol,
+            level: spike.level === 'normal' ? 'elevated' : spike.level,
+            message:
+              `${agg.symbol} volume ${spike.volumeMultiple.toFixed(1)}× expected — ` +
+              `${ratio > 1 ? 'put-heavy' : 'call-heavy'} (P/C ${ratio.toFixed(2)})` +
+              (spike.isBlockTrade ? ' · block trade' : ''),
+            volumeMultiple: Number(spike.volumeMultiple.toFixed(2)),
+            premium: Math.round(putPremium + callPremium),
+            contracts: putVolume + callVolume,
+            putCallRatio: Number(ratio.toFixed(3)),
+            createdAt: now,
+          }
+        : null;
+    return { fields, alert };
   }
 
   /** Recompute aggregate + sector ratios; call once per completed poll cycle. */
@@ -389,7 +482,16 @@ export class FlowEngine {
       // Holidays count as closed, matching the poller's idle gate — otherwise
       // the status bar and the health probe disagree on a market holiday.
       marketOpen: isMarketHours() && isTradingDayNow(),
+      realtime: this.realtimeInfo(),
     };
+  }
+
+  /** The real-time feed's state as the poller last reported it, with the live count now. */
+  realtimeInfo(now = Date.now()): RealtimeFeedInfo | null {
+    if (!this.realtimeFeed) return null;
+    let live = 0;
+    for (const st of this.tickers.values()) if (this.realtimeLive(st, now)) live += 1;
+    return { ...this.realtimeFeed, liveTickers: live };
   }
 
   /** Per-side OI×IV tiebreaker from live analytics vs yesterday's per-side OI/skew. */
@@ -418,11 +520,10 @@ export class FlowEngine {
   }
 
   private initTicker(symbol: string): TickerState {
+    const source = (): SourceState => ({ cumulative: null, cumulativeAt: 0, intervals: [], sparkline: [], receivedAt: 0 });
     return {
-      cumulative: null,
-      cumulativeAt: 0,
-      intervals: [],
-      sparkline: [],
+      primary: source(),
+      realtime: source(),
       flow: {
         symbol,
         sector: sectorOf(symbol),
@@ -459,6 +560,7 @@ export class FlowEngine {
         lastUpdated: 0,
         dataAsOf: 0,
         flowWindowMs: null,
+        realtime: false,
         lastDelta: 'none',
       },
     };

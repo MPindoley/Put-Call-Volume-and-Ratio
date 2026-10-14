@@ -251,11 +251,14 @@ function TickerHeader({ symbol, flow, sections }: { symbol: string; flow: Ticker
                 label="Data as of"
                 title={
                   flow.dataAsOf > 0
-                    ? `Market time the option data reflects. The free feed runs 15 minutes behind · fetched ${formatTime(flow.lastUpdated)} ET`
+                    ? flow.realtime
+                      ? `Flow is real time from Schwab; IV, skew and OI come from the delayed feed · fetched ${formatTime(flow.lastUpdated)} ET`
+                      : `Market time the option data reflects. The free feed runs 15 minutes behind · fetched ${formatTime(flow.lastUpdated)} ET`
                     : undefined
                 }
               >
                 <span className="tnum text-slate-400">{flow.dataAsOf > 0 ? `${formatTime(flow.dataAsOf)} ET` : '—'}</span>
+                {flow.realtime && <span className="text-[10px] font-medium text-bullish">real-time</span>}
               </HeaderStat>
             </div>
           )}

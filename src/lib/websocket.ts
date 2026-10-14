@@ -5,6 +5,7 @@
 import type { Server as HttpServer } from 'node:http';
 import { Server } from 'socket.io';
 import { getFlowEngine } from './flow-engine';
+import { readCookie, SESSION_COOKIE, sessionSecret, siteLocked, verifySession } from './session';
 import type { ClientToServerEvents, ServerToClientEvents } from '@/types';
 
 export type FlowSocketServer = Server<ClientToServerEvents, ServerToClientEvents>;
@@ -19,6 +20,15 @@ export function createSocketServer(httpServer: HttpServer): FlowSocketServer {
     // on every row), so a full-table frame shrinks several-fold — fewer bytes
     // out of the host (the metered direction) and faster loads on a phone.
     perMessageDeflate: { threshold: 1024 },
+    // Site lock (session.ts): socket.io answers its own path before Next's
+    // middleware runs, so the session cookie is checked here too.
+    allowRequest: (req, callback) => {
+      const secret = sessionSecret();
+      if (!siteLocked() || !secret) return callback(null, true);
+      verifySession(readCookie(req.headers.cookie, SESSION_COOKIE), secret)
+        .then((ok) => callback(null, ok))
+        .catch(() => callback(null, false));
+    },
   });
 
   const engine = getFlowEngine();

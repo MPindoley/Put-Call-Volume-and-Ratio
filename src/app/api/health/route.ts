@@ -24,5 +24,7 @@ export function GET(): NextResponse {
       : status.healthy
         ? 'ok'
         : 'stale'; // open and the poller stopped producing — a real fault
-  return NextResponse.json({ ...status, state }, { status: state === 'stale' ? 503 : 200 });
+  // Public even when the site is locked: leave out the broker connection's details.
+  const { realtime: _private, ...rest } = status;
+  return NextResponse.json({ ...rest, state }, { status: state === 'stale' ? 503 : 200 });
 }

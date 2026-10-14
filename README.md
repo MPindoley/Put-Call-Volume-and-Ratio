@@ -47,6 +47,7 @@ npm run dev                       # http://localhost:3000
 | `cboe` *(default)* | **Free** | 15-min delayed chains with per-contract volume | None — no key, no account |
 | `massive` | Paid for real-time (free tier = 5 calls/min, end-of-day) | Real-time on options plans | `MASSIVE_API_KEY` |
 | `demo` | Free | Synthetic | None — works offline |
+| + Schwab overlay *(optional)* | Free with a Schwab account | Real-time **flow** for ~200 hot names | [`docs/SCHWAB-SETUP.md`](docs/SCHWAB-SETUP.md) |
 
 - **CBOE (free)** pulls full option chains from CBOE's public delayed-quotes
   CDN. 15-minute delay means spike alerts land ~15 minutes behind the tape —
@@ -61,6 +62,14 @@ npm run dev                       # http://localhost:3000
   Real-time options snapshots require a paid options plan; set `MASSIVE_RPM`
   to your plan's rate. `POLYGON_API_KEY`/`POLYGON_RPM` are honored as aliases.
   Keys are only ever read server-side; nothing key-related reaches the browser.
+- **Schwab real-time overlay** — with your own Schwab brokerage account,
+  put/call volumes, P/C, premium and spike alerts become real time for the
+  watchlist, benchmarks, spiking names and the ~200 most active, on top of
+  CBOE. CBOE stays the source of every IV/skew/OI/GEX analytic (and of all
+  learning history) for every name, so those keep one methodology. Needs
+  `SITE_PASSWORD` (the data is licensed to you alone) and a weekly re-sign-in;
+  rows fall back to the delayed feed on their own if it lapses. Setup:
+  [`docs/SCHWAB-SETUP.md`](docs/SCHWAB-SETUP.md).
 - **Simulator** generates realistic synthetic flow so every feature (table,
   chart, spikes, alerts, sockets) can be exercised end to end, even offline.
 
@@ -144,7 +153,9 @@ prints don't page you.
 
 See [`.env.example`](.env.example) — `DATA_PROVIDER`, `MASSIVE_API_KEY`,
 `MASSIVE_RPM`, `CBOE_RPM`, `DATABASE_URL`, `PORT`, `POLL_INTERVAL_SEC`,
-`MAX_TICKERS` (legacy `POLYGON_*` names still honored).
+`MAX_TICKERS` (legacy `POLYGON_*` names still honored); `SITE_PASSWORD` /
+`SESSION_SECRET` (site lock); `SCHWAB_APP_KEY`, `SCHWAB_APP_SECRET`,
+`SCHWAB_CALLBACK_URL`, `SCHWAB_RPM`, `SCHWAB_HOT_SYMBOLS` (real-time overlay).
 
 ## Volatility & positioning metrics (v5)
 
@@ -214,6 +225,8 @@ follows automatically.
    `NODE_ENV=production`.
 4. Build command `npm run build && npx prisma db push`, start command `npm start`.
 5. Railway assigns `PORT` automatically; the server reads it.
+6. Optional: `SITE_PASSWORD` to lock the site, then the Schwab variables for
+   real-time flow ([`docs/SCHWAB-SETUP.md`](docs/SCHWAB-SETUP.md)).
 
 ## Roadmap / not yet implemented
 
