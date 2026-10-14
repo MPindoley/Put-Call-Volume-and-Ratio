@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getFlowEngine } from '@/lib/flow-engine';
 import { tryDb } from '@/lib/db';
 import { loadTrackRecord } from '@/lib/learning-data';
+import { tickerCoverage } from '@/lib/projection-jobs';
 import { TRACKED_UNIVERSE } from '@/lib/universe';
 
 export const dynamic = 'force-dynamic';
@@ -26,7 +27,7 @@ export async function GET(_req: Request, { params }: Params): Promise<NextRespon
       { status: 404 },
     );
   }
-  const [history, trackRecord] = await Promise.all([
+  const [history, trackRecord, projectionCoverage] = await Promise.all([
     tryDb('ticker history', (db) =>
       // The page shows the latest 100 buckets and refetches every 15 s: read
       // just those, not 30 days of rows only to discard most of them.
@@ -44,6 +45,20 @@ export async function GET(_req: Request, { params }: Params): Promise<NextRespon
       }),
     ),
     tryDb('ticker track record', (db) => loadTrackRecord(db, symbol)),
+    tickerCoverage(symbol),
   ]);
-  return NextResponse.json({ flow, history: (history ?? []).reverse(), trackRecord });
+  const coverage = engine.projectionCoverage;
+  return NextResponse.json({
+    flow,
+    history: (history ?? []).reverse(),
+    trackRecord,
+    // Market-implied projection + how such projections have held up.
+    projection: engine.projections.get(symbol) ?? null,
+    calibration: engine.calibrations.get(symbol) ?? null,
+    projectionCoverage: {
+      ticker: projectionCoverage,
+      sector: coverage?.bySector.get(flow.sector) ?? null,
+      all: coverage?.all ?? null,
+    },
+  });
 }

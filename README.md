@@ -183,6 +183,26 @@ short interest and insider transactions come from different data sources and
 are candidates for a later version. None of these metrics is predictive alone
 — they're a sentiment mosaic, not trade signals.
 
+## Ticker page: projection, relationships, definitions
+
+- **Projection** — the price distribution option prices imply for each
+  expiry (skew-aware, from the volatility smile): 68% / 95% ranges, the odds
+  of closing above any level, a price cone across expiries, open-interest walls
+  and the dealer-gamma flip. Beside it: a **history check** (how this stock's
+  real moves have compared with what options priced, shrunk toward its sector)
+  and the projection's own **track record** (weekly ranges graded at expiry).
+  The learned **signal tilt** is shown separately — the market prices how far,
+  the learned record speaks to which way.
+- **Relationships** — which measurements (sector-relative skew / IV / OI z,
+  IV rank, term slope, volume vs normal, recent move) have come before the
+  stock beating or lagging SPY, which move together day to day, and the past
+  setups (this stock and its sector) most like today's, with what followed
+  against the base rate.
+- **Definitions** — every underlined term explains itself on hover, focus or
+  tap (`src/lib/glossary.ts`); scanner column headers carry the same text.
+
+Formulas: [`docs/METRICS.md`](docs/METRICS.md#projection-history-check-and-relationships-ticker-page).
+
 ## Intelligence jobs (require a database)
 
 With `DATABASE_URL` set (see [docs/DATABASE-SETUP.md](docs/DATABASE-SETUP.md)),

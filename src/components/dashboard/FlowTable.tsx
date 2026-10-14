@@ -19,6 +19,7 @@ import { ConvictionCell, QUOTE_STALE_MS } from '@/components/ui/conviction';
 import { Skeleton } from '@/components/ui/skeleton';
 import { usePersistentState } from '@/hooks/usePersistentState';
 import { COLUMN_DEFS, fitColumns, rowWidth, type ColumnId } from '@/lib/table-columns';
+import { GLOSSARY, type GlossaryEntry, type GlossaryKey } from '@/lib/glossary';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
 import { SECTORS } from '@/lib/universe';
 import { selectVisibleRows, useFlowStore, type FlowFilter, type SortKey } from '@/store/flowStore';
@@ -72,6 +73,32 @@ const COLUMN_META: Record<ColumnId, { sort: SortKey | null; align: 'left' | 'rig
 };
 
 const DEF_BY_ID = new Map(COLUMN_DEFS.map((c) => [c.id, c]));
+
+/** The glossary entry behind each column, so header tooltips match the ticker page's definitions. */
+const COLUMN_TERM: Partial<Record<ColumnId, GlossaryKey>> = {
+  conviction: 'conviction',
+  putCallRatio: 'putCallRatio',
+  putVolume: 'putsCalls5m',
+  callVolume: 'putsCalls5m',
+  netFlow: 'netFlow',
+  premium: 'premium5m',
+  iv30: 'iv30',
+  ivRank: 'ivRank',
+  rrSkew: 'rrSkew',
+  oiPutCall: 'oiPutCall',
+  skewZ30: 'skewZ',
+  skewZ90: 'skewZ',
+  spikeScore: 'unusual',
+  lastUpdated: 'dataAsOf',
+};
+
+function headerTitle(id: ColumnId): string | undefined {
+  const base = COLUMN_META[id].title;
+  const key = COLUMN_TERM[id];
+  if (!key) return base;
+  const e: GlossaryEntry = GLOSSARY[key];
+  return [base, e.how && `How: ${e.how}`, e.read && `Reading it: ${e.read}`, e.caveat].filter(Boolean).join('\n\n');
+}
 
 /**
  * z-score cell rendered as BACKGROUND INTENSITY, not a printed number
@@ -627,7 +654,7 @@ export function FlowTable({
                 key={id}
                 disabled={meta.sort === null}
                 onClick={() => meta.sort && setSort(meta.sort)}
-                title={meta.title}
+                title={headerTitle(id)}
                 className={cn(
                   'shrink-0 whitespace-nowrap',
                   meta.align === 'right' ? 'text-right' : 'text-left',

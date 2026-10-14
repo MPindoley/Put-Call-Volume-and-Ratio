@@ -25,6 +25,7 @@ import { refreshEarningsRealized, refreshEventGauges, refreshIdiosyncraticEvents
 import { recordDailyRegime } from './regime-jobs';
 import { logSignals, scoreSignals, trackBackwardationEpisodes } from './signal-jobs';
 import { loadConvictionsIntoEngine, refreshEdgeBooks } from './learning-jobs';
+import { gradeProjections, logProjections, refreshProjectionHistory } from './projection-jobs';
 import type { FlowEngine } from './flow-engine';
 import { finalizeDailyCapture, loadLatestIntoEngine } from './sector-analytics';
 import { NOT_SEEDED } from './seed-guard';
@@ -317,6 +318,8 @@ export async function maybeCaptureEndOfDay(engine: FlowEngine): Promise<boolean>
     const emitted = await logSignals(engine);
     await trackBackwardationEpisodes();
     if (emitted > 0) console.log(`[signals] logged ${emitted} signals for today's session`);
+    // Weekly: today's implied ranges, to be graded at their expiries.
+    await logProjections(engine);
   }
   return ok;
 }
@@ -422,6 +425,10 @@ export async function runMaintenance(engine: FlowEngine): Promise<void> {
   // (and reconstruct any missing past books under the current version).
   const books = await refreshEdgeBooks();
   if (books && books.written > 0) await loadConvictionsIntoEngine(engine);
+  // Projections: grade the ones whose expiry settled, then refresh how implied
+  // ranges have compared with real moves (skips when nothing new was finalized).
+  await gradeProjections();
+  await refreshProjectionHistory(engine);
   await pruneHistory();
   if (baselines > 0 || scored > 0 || idio > 0 || realized > 0) {
     console.log(

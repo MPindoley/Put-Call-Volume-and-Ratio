@@ -29,6 +29,8 @@ import type {
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
 import { computeChainAnalytics } from './chain-analytics';
+import { computeProjection, type Projection } from './projection';
+import type { CalibrationView, Coverage, HorizonKey } from './projection-history';
 import { MIN_COVERAGE_MS, pruneIntervals, windowFlow, type FlowInterval } from './flow-window';
 import { buildEventGauge, type EventGaugeInput } from './event-analytics';
 import { classifyOiFlow, defaultInstrument, sideIvChanges, type InstrumentConfig } from './interpretation';
@@ -123,6 +125,15 @@ export class FlowEngine {
   readonly idiosyncraticMoves = new Map<string, IdiosyncraticMove[]>();
   /** Per-ticker learned conviction from the latest edge book (learning-jobs.ts). */
   readonly convictions = new Map<string, TickerConviction>();
+  /**
+   * Per-ticker market-implied projection from the latest chain (projection.ts).
+   * Served to the ticker page only — never broadcast with the table rows.
+   */
+  readonly projections = new Map<string, Projection>();
+  /** Per-ticker realized-vs-implied calibration by horizon, refreshed nightly (projection-jobs.ts). */
+  readonly calibrations = new Map<string, Record<HorizonKey, CalibrationView>>();
+  /** Graded-projection coverage across all names and per sector, refreshed nightly. */
+  projectionCoverage: { all: Record<HorizonKey, Coverage>; bySector: Map<string, Record<HorizonKey, Coverage>> } | null = null;
   marketContext: MarketContext | null = null;
   settings: AppSettings = { ...DEFAULT_SETTINGS };
   mode: DataSourceMode = 'simulated';
@@ -180,6 +191,12 @@ export class FlowEngine {
 
     // Event gauge: recompute the live implied move from the chain against the
     // active catalyst, folded into the stored realized distribution.
+    // Market-implied projection, from the same chain and data time.
+    if (agg.contracts && agg.contracts.length > 0) {
+      const projection = computeProjection(agg.symbol, agg.contracts, agg.underlyingPrice, asOf);
+      if (projection) this.projections.set(agg.symbol, projection);
+    }
+
     const eventInput = this.eventInputs.get(agg.symbol);
     const eventGauge =
       eventInput && agg.contracts && agg.contracts.length > 0

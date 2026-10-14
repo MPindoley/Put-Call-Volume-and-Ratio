@@ -90,9 +90,9 @@ export function TickerSearch(): JSX.Element {
         aria-controls="ticker-search-list"
         aria-activedescendant={open && matches[active] ? `ticker-opt-${matches[active]!.symbol}` : undefined}
         aria-label="Search tickers"
-        className="h-8 w-full rounded-md border border-surface-border bg-surface pl-8 pr-8 text-xs uppercase text-slate-200 placeholder:normal-case placeholder:text-slate-600 focus:border-blue-500 focus:outline-none"
+        className="h-8 w-full min-w-0 rounded-md border border-surface-border bg-surface pl-8 pr-2 text-xs sm:pr-8 uppercase text-slate-200 placeholder:normal-case placeholder:text-slate-600 focus:border-blue-500 focus:outline-none"
       />
-      <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-surface-border px-1 text-[10px] text-slate-500">
+      <kbd className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 rounded border sm:block border-surface-border px-1 text-[10px] text-slate-500">
         /
       </kbd>
 

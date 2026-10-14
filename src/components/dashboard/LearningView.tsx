@@ -13,6 +13,8 @@ import { PageHeader } from '@/components/shell/PageHeader';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Calibration, SignalSummary } from '@/lib/learning';
 import type { LearningReport } from '@/lib/learning-jobs';
+import type { Coverage, HorizonKey } from '@/lib/projection-history';
+import { Term } from '@/components/ui/term';
 import { cn } from '@/lib/utils';
 
 interface SummaryResponse {
@@ -87,6 +89,7 @@ export function LearningView(): JSX.Element {
       <LearnedCard data={summary.data} loading={summary.isLoading} />
 
       {report.data && <SelfGradeCard c={report.data.selfGrade} />}
+      <ProjectionRecordCard />
       {report.data && <HealthCard r={report.data} />}
     </div>
   );
@@ -340,6 +343,86 @@ function HealthCard({ r }: { r: LearningReport }): JSX.Element {
         )}
         <p className="pt-1 text-[10px] text-slate-600">Learning version {r.version} · report generated {r.generatedAt.slice(0, 16).replace('T', ' ')} UTC</p>
       </div>
+    </Card>
+  );
+}
+
+interface ProjectionCoverageResponse {
+  all: Record<HorizonKey, Coverage> | null;
+  bySector: Record<string, Record<HorizonKey, Coverage>>;
+}
+
+/**
+ * The projection's own report card: one market-implied range per name per
+ * week, graded with the settled close at expiry. A fair 68% range holds about
+ * 68% of the time; consistently more means options overprice moves, and the
+ * low/high split shows which way the misses fall.
+ */
+function ProjectionRecordCard(): JSX.Element {
+  const q = useQuery({
+    queryKey: ['projection-coverage'],
+    queryFn: () => getJson<ProjectionCoverageResponse>('/api/projection'),
+    refetchInterval: 300_000,
+  });
+  const pctOf = (v: number | null | undefined): string => (v === null || v === undefined ? '—' : `${Math.round(v * 100)}%`);
+  const rows: { label: string; c: Record<HorizonKey, Coverage> }[] = q.data
+    ? [
+        ...(q.data.all ? [{ label: 'All names', c: q.data.all }] : []),
+        ...Object.entries(q.data.bySector).map(([label, c]) => ({ label, c })),
+      ]
+    : [];
+  const any = rows.some((r) => r.c.week.n + r.c.month.n > 0);
+  return (
+    <Card>
+      <CardHeader title="Projection track record — did prices land where options said?" />
+      {!any ? (
+        <p className="p-4 text-xs text-slate-400">
+          No graded projections yet. Each week the end-of-day capture logs every name&apos;s ~1-week and ~1-month implied ranges;
+          they are graded with the settled close on their expiry date.
+        </p>
+      ) : (
+        <div className="overflow-x-auto p-4">
+          <table className="w-full min-w-[560px] text-xs tnum">
+            <thead className="text-left text-[10px] uppercase tracking-wider text-slate-500">
+              <tr>
+                <th className="py-1 font-normal" />
+                <th className="py-1 text-right font-normal">~1 week: graded</th>
+                <th className="py-1 text-right font-normal">
+                  in <Term k="range68">68%</Term>
+                </th>
+                <th className="py-1 text-right font-normal">missed low / high</th>
+                <th className="py-1 text-right font-normal">~1 month: graded</th>
+                <th className="py-1 text-right font-normal">in 68%</th>
+                <th className="py-1 text-right font-normal">in 95%</th>
+                <th className="py-1 text-right font-normal">
+                  <Term k="adjustedRange">adjusted 68%</Term>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ label, c }) => (
+                <tr key={label} className={cn('border-t border-surface-border/50', label === 'All names' ? 'text-slate-100' : 'text-slate-300')}>
+                  <td className="py-1">{label}</td>
+                  <td className="py-1 text-right">{c.week.n}</td>
+                  <td className="py-1 text-right">{pctOf(c.week.inside68)}</td>
+                  <td className="py-1 text-right text-slate-500">
+                    {pctOf(c.week.below68)} / {pctOf(c.week.above68)}
+                  </td>
+                  <td className="py-1 text-right">{c.month.n}</td>
+                  <td className="py-1 text-right">{pctOf(c.month.inside68)}</td>
+                  <td className="py-1 text-right">{pctOf(c.month.inside95)}</td>
+                  <td className="py-1 text-right">{c.month.calibratedN > 0 ? pctOf(c.month.calibratedInside68) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+            A fair 68% range holds about 68% of the time. Consistently higher means option prices overstate real moves (the usual
+            premium for protection); the low/high split shows which side the misses fall on. The adjusted column checks the
+            history-adjusted range on the projections that carried one.
+          </p>
+        </div>
+      )}
     </Card>
   );
 }

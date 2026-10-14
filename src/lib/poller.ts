@@ -24,6 +24,7 @@ import {
 import { loadInstrumentConfigs } from './interpretation';
 import { backfillRegimeHistory } from './regime-jobs';
 import { loadConvictionsIntoEngine } from './learning-jobs';
+import { refreshProjectionHistory } from './projection-jobs';
 import { loadLatestIntoEngine } from './sector-analytics';
 import { getQuoteClient, pickQuoteSymbols, type QuoteClient } from './quotes';
 import { RealtimeFeed } from './realtime-feed';
@@ -274,6 +275,9 @@ export class Poller {
     await loadLatestIntoEngine(this.engine);
     // What the app has learned about each name's latest signals (edge book).
     await loadConvictionsIntoEngine(this.engine);
+    // How implied ranges have compared with real moves (DB-only, so it need not
+    // wait for the long close-history backfill before the first maintenance pass).
+    await refreshProjectionHistory(this.engine);
   }
 
   /**
