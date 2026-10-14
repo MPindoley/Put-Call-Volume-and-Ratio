@@ -553,6 +553,39 @@ model UserSettings {
   updatedAt          DateTime @updatedAt
 }
 
+/// Each name's market-implied range (projection.ts), logged once a week at the
+/// pinned end-of-day capture for two horizons (~7 and ~30 days), and graded with
+/// the settled close at expiry (projection-jobs.ts). The projection's own track
+/// record: did the price land inside the 68% / 95% ranges as often as claimed?
+/// Immutable once graded; `method` keeps different projection methods apart.
+model ProjectionLog {
+  id         BigInt    @id @default(autoincrement())
+  symbol     String
+  /// ET session the projection was logged on.
+  loggedOn   DateTime
+  /// 'week' | 'month'
+  horizon    String
+  expiration DateTime
+  method     String
+  spot       Float
+  forward    Float
+  q025       Float
+  q16        Float
+  q50        Float
+  q84        Float
+  q975       Float
+  /// Realized-vs-implied ratio in effect when logged (null = not enough history yet).
+  calRatio   Float?
+  /// Settled close on the expiry date — or the last close before it, if the name stopped trading.
+  outcome    Float?
+  outcomeOn  DateTime?
+
+  @@unique([symbol, loggedOn, horizon])
+  @@index([outcome, expiration])
+  @@index([symbol, horizon])
+  @@index([loggedOn])
+}
+
 /// The owner's broker connection (Schwab real-time chains, schwab-auth.ts).
 /// One row per provider. Token values are AES-256-GCM ciphertext, never
 /// plaintext: a leaked database or backup alone does not grant account access.

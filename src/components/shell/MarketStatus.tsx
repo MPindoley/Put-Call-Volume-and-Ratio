@@ -35,6 +35,19 @@ export function MarketStatus(): JSX.Element {
     );
   }
 
+  if (status.lastPollAt === 0) {
+    // Connected, but the first poll cycle has not finished (a cold start takes a minute or so).
+    return (
+      <Link
+        href="/connections"
+        className="flex items-center gap-1.5 rounded-full border border-surface-border px-2.5 py-1 text-[11px] text-slate-400 hover:border-slate-500"
+      >
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-400" />
+        Starting · first data loading
+      </Link>
+    );
+  }
+
   const ageMs = now - status.lastPollAt;
   const freshness: 'live' | 'stale' | 'dead' = ageMs < 120_000 ? 'live' : ageMs < 300_000 ? 'stale' : 'dead';
   const base = SOURCE[status.provider] ?? { label: status.provider, title: status.provider, warn: false };

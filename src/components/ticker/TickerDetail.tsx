@@ -13,6 +13,12 @@ import { SpikeBadge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ConvictionCell, QUOTE_STALE_MS } from '@/components/ui/conviction';
 import { Sparkline } from '@/components/dashboard/Sparkline';
+import { Term } from '@/components/ui/term';
+import type { GlossaryKey } from '@/lib/glossary';
+import type { Projection } from '@/lib/projection';
+import type { CalibrationView, HorizonKey } from '@/lib/projection-history';
+import { ProjectionCard, type ProjectionCoverage } from './ProjectionCard';
+import { RelationshipsCard } from './RelationshipsCard';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
 import type { TrackRecord } from '@/lib/learning-data';
 import { useFlowStore } from '@/store/flowStore';
@@ -30,6 +36,9 @@ interface DetailResponse {
   flow: TickerFlow;
   history: HistoryPoint[];
   trackRecord: TrackRecord | null;
+  projection: Projection | null;
+  calibration: Record<HorizonKey, CalibrationView> | null;
+  projectionCoverage: ProjectionCoverage;
 }
 
 interface SectionDef {
@@ -39,7 +48,10 @@ interface SectionDef {
 
 /** Which sections this ticker has, in reading order (cards with nothing to show are skipped). */
 function sectionsFor(data: DetailResponse | undefined): SectionDef[] {
-  const out: SectionDef[] = [{ id: 'overview', label: 'Overview' }];
+  const out: SectionDef[] = [
+    { id: 'projection', label: 'Projection' },
+    { id: 'overview', label: 'Flow' },
+  ];
   if (!data) return out;
   const { flow } = data;
   if (flow.analytics || flow.iv30 !== null) out.push({ id: 'volatility', label: 'Volatility & positioning' });
@@ -47,6 +59,7 @@ function sectionsFor(data: DetailResponse | undefined): SectionDef[] {
   if (data.trackRecord) out.push({ id: 'track-record', label: 'Track record' });
   if (flow.eventGauge) out.push({ id: 'event', label: 'Event move' });
   if (flow.idiosyncraticMoves && flow.idiosyncraticMoves.length > 0) out.push({ id: 'idiosyncratic', label: 'Idiosyncratic' });
+  out.push({ id: 'relationships', label: 'Relationships' });
   out.push({ id: 'history', label: 'History' });
   return out;
 }
@@ -96,10 +109,20 @@ export function TickerDetail({ symbol }: { symbol: string }): JSX.Element {
   );
 }
 
-function HeaderStat({ label, children, title }: { label: string; children: ReactNode; title?: string }): JSX.Element {
+function HeaderStat({
+  label,
+  children,
+  title,
+  term,
+}: {
+  label: string;
+  children: ReactNode;
+  title?: string;
+  term?: GlossaryKey;
+}): JSX.Element {
   return (
     <div title={title}>
-      <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">{term ? <Term k={term}>{label}</Term> : label}</p>
       <div className="mt-0.5 flex h-5 items-center gap-1.5 text-sm">{children}</div>
     </div>
   );
@@ -227,21 +250,21 @@ function TickerHeader({ symbol, flow, sections }: { symbol: string; flow: Ticker
 
           {flow && (
             <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
-              <HeaderStat label="Learned lean" title="Signals from the latest session, weighted by how well each has actually worked — see Track record">
+              <HeaderStat label="Learned lean" term="conviction" title="Signals from the latest session, weighted by how well each has actually worked — see Track record">
                 <a href="#track-record" className="hover:opacity-80">
                   <ConvictionCell row={flow} />
                 </a>
               </HeaderStat>
-              <HeaderStat label="P/C 5m">
+              <HeaderStat label="P/C 5m" term="putCallRatio">
                 <span className={cn('font-semibold tnum', flow.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
                   {formatRatio(flow.putCallRatio)}
                 </span>
               </HeaderStat>
-              <HeaderStat label="Unusual" title={`Volume ${flow.volumeVsExpected.toFixed(1)}× expected`}>
+              <HeaderStat label="Unusual" term="unusual" title={`Volume ${flow.volumeVsExpected.toFixed(1)}× expected`}>
                 <SpikeBadge level={flow.spikeLevel} />
                 <span className="tnum text-slate-300">{flow.spikeScore}</span>
               </HeaderStat>
-              <HeaderStat label="IV30 · rank">
+              <HeaderStat label="IV30 · rank" term="ivRank">
                 <span className="tnum text-slate-200">{flow.iv30 !== null ? flow.iv30.toFixed(1) : '—'}</span>
                 <span className={cn('tnum', (flow.ivRank ?? 0) >= 75 ? 'text-caution' : 'text-slate-500')}>
                   {flow.ivRank !== null ? `· ${flow.ivRank}` : ''}
@@ -249,6 +272,7 @@ function TickerHeader({ symbol, flow, sections }: { symbol: string; flow: Ticker
               </HeaderStat>
               <HeaderStat
                 label="Data as of"
+                term="dataAsOf"
                 title={
                   flow.dataAsOf > 0
                     ? flow.realtime
@@ -294,10 +318,10 @@ function TickerHeader({ symbol, flow, sections }: { symbol: string; flow: Ticker
   );
 }
 
-function Stat({ label, value, className }: { label: string; value: string; className?: string }): JSX.Element {
+function Stat({ label, value, className, term }: { label: string; value: string; className?: string; term?: GlossaryKey }): JSX.Element {
   return (
     <div>
-      <p className="text-[10px] uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="text-[10px] uppercase tracking-wider text-slate-500">{term ? <Term k={term}>{label}</Term> : label}</p>
       <p className={cn('text-lg font-semibold tnum text-slate-100', className)}>{value}</p>
     </div>
   );
@@ -314,15 +338,17 @@ function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
     <Card>
       <CardHeader title="Volatility & Positioning" />
       <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
-        <Stat label="IV30" value={flow.iv30 !== null ? `${flow.iv30.toFixed(1)}` : '—'} />
+        <Stat label="IV30" term="iv30" value={flow.iv30 !== null ? `${flow.iv30.toFixed(1)}` : '—'} />
         <Stat
           label="IV rank"
+          term="ivRank"
           value={flow.ivRank !== null ? `${flow.ivRank}` : '—'}
           className={(flow.ivRank ?? 0) >= 75 ? 'text-caution' : undefined}
         />
-        <Stat label="HV20 (realized)" value={flow.hv20 !== null ? `${flow.hv20.toFixed(1)}` : '—'} />
+        <Stat label="HV20 (realized)" term="hv20" value={flow.hv20 !== null ? `${flow.hv20.toFixed(1)}` : '—'} />
         <Stat
           label="IV − HV spread"
+          term="ivHvSpread"
           value={ivHvSpread !== null ? `${ivHvSpread >= 0 ? '+' : ''}${ivHvSpread.toFixed(1)}` : '—'}
           className={ivHvSpread !== null && ivHvSpread > 10 ? 'text-caution' : undefined}
         />
@@ -330,11 +356,13 @@ function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
           <>
             <Stat
               label="25Δ risk reversal"
+              term="rrSkew"
               value={a.rrSkew25 !== null ? `${a.rrSkew25 >= 0 ? '+' : ''}${a.rrSkew25.toFixed(1)}` : '—'}
               className={a.rrSkew25 !== null ? (a.rrSkew25 > 0 ? 'text-bullish' : a.rrSkew25 < -4 ? 'text-bearish' : undefined) : undefined}
             />
             <Stat
               label="Term structure"
+              term="termSlope"
               value={
                 a.termSlope !== null
                   ? `${a.backwardated ? 'BACKWARDATED' : 'contango'} ${a.termSlope >= 0 ? '+' : ''}${a.termSlope.toFixed(1)}`
@@ -342,24 +370,27 @@ function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
               }
               className={a.backwardated ? 'text-bearish' : undefined}
             />
-            <Stat label="Implied move (nearest exp)" value={a.impliedMovePct !== null ? `±${a.impliedMovePct.toFixed(1)}%` : '—'} />
-            <Stat label="Likely catalyst expiry" value={a.eventExpiry ?? 'none detected'} />
+            <Stat label="Implied move (nearest exp)" term="impliedMove" value={a.impliedMovePct !== null ? `±${a.impliedMovePct.toFixed(1)}%` : '—'} />
+            <Stat label="Likely catalyst expiry" term="eventExpiry" value={a.eventExpiry ?? 'none detected'} />
             <Stat
               label="OI put/call"
+              term="oiPutCall"
               value={a.oiPutCall !== null ? a.oiPutCall.toFixed(2) : '—'}
               className={(a.oiPutCall ?? 1) > 1 ? 'text-bearish' : 'text-bullish'}
             />
             <Stat
               label="OI change (day)"
+              term="oiChange"
               value={flow.oiChangePct !== null ? `${flow.oiChangePct >= 0 ? '+' : ''}${flow.oiChangePct.toFixed(1)}%` : '—'}
             />
-            <Stat label="Max pain (near exp)" value={a.maxPain !== null ? `$${a.maxPain}` : '—'} />
+            <Stat label="Max pain (near exp)" term="maxPain" value={a.maxPain !== null ? `$${a.maxPain}` : '—'} />
             <Stat
               label="Dealer gamma (est)"
+              term="gex"
               value={a.gexPer1Pct !== null ? `${a.gexPer1Pct >= 0 ? '+' : ''}${formatCompact(a.gexPer1Pct)}/1%` : '—'}
               className={a.gexPer1Pct !== null ? (a.gexPer1Pct >= 0 ? 'text-bullish' : 'text-bearish') : undefined}
             />
-            <Stat label="LEAP IV (long-dated)" value={a.leapIv !== null ? a.leapIv.toFixed(1) : '—'} />
+            <Stat label="LEAP IV (long-dated)" term="leapIv" value={a.leapIv !== null ? a.leapIv.toFixed(1) : '—'} />
           </>
         )}
       </div>
@@ -367,7 +398,7 @@ function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
       {a && a.topStrikes.length > 0 && (
         <div className="border-t border-surface-border px-4 py-3">
           <p className="mb-2 text-[10px] uppercase tracking-wider text-slate-500">
-            Open-interest walls (top strikes — magnets/battlegrounds near expiry)
+            <Term k="oiWalls">Open-interest walls</Term> (top strikes — magnets/battlegrounds near expiry)
           </p>
           <div className="space-y-1">
             {a.topStrikes.map((s) => (
@@ -389,7 +420,7 @@ function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
       {flow.oiSignals && (
         <div className="border-t border-surface-border px-4 py-3">
           <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">
-            OI flow (day) — OI change paired with same-side IV change
+            <Term k="oiFlow">OI flow (day)</Term> — OI change paired with same-side IV change
             {flow.inverse && <span className="ml-1 text-caution">· inverse: sides read as underlying exposure</span>}
           </p>
           <p
@@ -444,12 +475,12 @@ function OiSideRow({ label, side }: { label: string; side: import('@/types').Sid
 /** Sector-relative z-scores: how this name's spreads sit vs its sector, over time. */
 function SectorRelativeCard({ flow }: { flow: TickerFlow }): JSX.Element {
   const r = flow.sectorRelative;
-  const rows: { label: string; z30: number | null; z90: number | null; hint: string }[] = r
+  const rows: { label: string; term: GlossaryKey; z30: number | null; z90: number | null; hint: string }[] = r
     ? [
-        { label: 'Skew (25Δ RR)', z30: r.skewZ30, z90: r.skewZ90, hint: 'Positive = calls richer than sector; negative = puts richer' },
-        { label: 'IV30', z30: r.ivZ30, z90: r.ivZ90, hint: 'Positive = IV elevated vs sector median' },
-        { label: 'OI P/C', z30: r.oiPcZ30, z90: r.oiPcZ90, hint: 'Positive = more put-heavy positioning than sector' },
-        { label: 'IV − HV', z30: r.ivHvZ30, z90: r.ivHvZ90, hint: 'Positive = richer vol premium than sector' },
+        { label: 'Skew (25Δ RR)', term: 'skewZ', z30: r.skewZ30, z90: r.skewZ90, hint: 'Positive = calls richer than sector; negative = puts richer' },
+        { label: 'IV30', term: 'ivZ', z30: r.ivZ30, z90: r.ivZ90, hint: 'Positive = IV elevated vs sector median' },
+        { label: 'OI P/C', term: 'oiPcZ', z30: r.oiPcZ30, z90: r.oiPcZ90, hint: 'Positive = more put-heavy positioning than sector' },
+        { label: 'IV − HV', term: 'ivHvZ', z30: r.ivHvZ30, z90: r.ivHvZ90, hint: 'Positive = richer vol premium than sector' },
       ]
     : [];
 
@@ -495,21 +526,29 @@ function SectorRelativeCard({ flow }: { flow: TickerFlow }): JSX.Element {
                 ? 'Distribution warning: price trending up while skew-z is deteriorating (positioning turning defensive vs the move).'
                 : 'Accumulation warning: price trending down/flat while skew-z is improving (positioning quietly turning constructive).'}
               {flow.inverse && ' (translated to underlying exposure — inverse product.)'}
-              <span className="ml-1 opacity-70">heuristic screen · hover for HAC t</span>
+              <span className="ml-1 opacity-70">
+                <Term k="divergence">heuristic screen</Term> · hover for HAC t
+              </span>
             </p>
           )}
           <table className="w-full text-xs">
             <thead className="text-left text-[10px] uppercase tracking-wider text-slate-500">
               <tr>
                 <th className="px-4 py-1.5">Metric (vs sector median)</th>
-                <th className="px-4 py-1.5 text-right">z30</th>
-                <th className="px-4 py-1.5 text-right">z90</th>
+                <th className="px-4 py-1.5 text-right">
+                  <Term k="zScore">z30</Term>
+                </th>
+                <th className="px-4 py-1.5 text-right">
+                  <Term k="zScore">z90</Term>
+                </th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={row.label} className="border-t border-surface-border/50 text-slate-300" title={row.hint}>
-                  <td className="px-4 py-2">{row.label}</td>
+                  <td className="px-4 py-2">
+                    <Term k={row.term}>{row.label}</Term>
+                  </td>
                   <td className={cn('px-4 py-2 text-right tnum', zClass(row.z30))}>{fmtZ(row.z30)}</td>
                   <td className={cn('px-4 py-2 text-right tnum', zClass(row.z90))}>{fmtZ(row.z90)}</td>
                 </tr>
@@ -576,10 +615,11 @@ function EventGaugeCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
       <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
         <Stat
           label="Implied event move"
+          term="impliedEventMove"
           value={pct(g.impliedMove)}
           className={g.impliedMove !== null ? 'text-slate-100' : undefined}
         />
-        <Stat label="Clean diffusive vol" value={g.diffusiveVol !== null ? `${(g.diffusiveVol * 100).toFixed(1)}` : '—'} />
+        <Stat label="Clean diffusive vol" term="diffusiveVol" value={g.diffusiveVol !== null ? `${(g.diffusiveVol * 100).toFixed(1)}` : '—'} />
         <Stat
           label="Extraction"
           value={g.impliedMethod === 'pre-event-reference' ? 'pre-event ref' : g.impliedMethod === 'two-post-event' ? 'two post-event' : '—'}
@@ -608,7 +648,9 @@ function EventGaugeCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
         {g.display ? (
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-400">Rich/cheap vs confirmed realized history</span>
+              <span className="text-slate-400">
+                <Term k="richCheap">Rich/cheap</Term> vs confirmed realized history
+              </span>
               {richCheap && (
                 <span className={cn('font-semibold', richCheap.cls)}>
                   {richCheap.text}
@@ -652,7 +694,10 @@ function IdiosyncraticCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
               <span className={cn('w-16 text-right font-semibold', m.movePct >= 0.05 ? 'text-caution' : 'text-slate-300')}>
                 ±{(m.movePct * 100).toFixed(1)}%
               </span>
-              <span className="text-slate-500">{m.residualZ.toFixed(1)}σ residual</span>
+              <span className="text-slate-500">
+                {m.residualZ.toFixed(1)}
+                <Term k="residualZ">σ residual</Term>
+              </span>
             </div>
           ))}
         </div>
@@ -709,7 +754,9 @@ function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackReco
                   <p className="text-[11px] text-slate-300">
                     {SIGNAL_NAMES[l.signalType] ?? l.signalType}{' '}
                     <span className={l.direction === 'bullish' ? 'text-bullish' : 'text-bearish'}>{l.direction}</span>
-                    <span className="ml-2 tnum font-semibold text-slate-100">{pts(l.edge)} pts above base</span>
+                    <span className="ml-2 tnum font-semibold text-slate-100">
+                      {pts(l.edge)} pts above <Term k="baseRate">base</Term>
+                    </span>
                   </p>
                   <table className="mt-1 w-full text-[11px] tnum">
                     <thead className="text-left text-[9px] uppercase tracking-wider text-slate-600">
@@ -720,9 +767,11 @@ function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackReco
                           Own data
                         </th>
                         <th className="py-0.5 text-right font-normal" title="Share of the estimate this level's evidence earned">
-                          Weight
+                          <Term k="evidenceWeight">Weight</Term>
                         </th>
-                        <th className="py-0.5 text-right font-normal">Estimate</th>
+                        <th className="py-0.5 text-right font-normal">
+                          <Term k="learnedEdge">Estimate</Term>
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -830,28 +879,40 @@ function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
   // 5-minute figures need two snapshots at least a minute apart; until then they are unmeasured, not zero.
   const measured = flow.flowWindowMs !== null;
   return (
-    <div className="grid items-start gap-3 xl:grid-cols-12">
-      <div className="space-y-3 xl:col-span-7">
+    // grid-cols-1 = minmax(0, 1fr): a wide child cannot stretch the column past a phone screen.
+    <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-12">
+      <p className="text-[10px] text-slate-500 xl:col-span-12">
+        Underlined terms explain themselves — hover, tab to them, or tap for the definition, how it is computed and how to read it.
+      </p>
+      <div className="min-w-0 xl:col-span-12">
+        <Section id="projection">
+          <ProjectionCard flow={flow} projection={data.projection} calibration={data.calibration} coverage={data.projectionCoverage} />
+        </Section>
+      </div>
+      <div className="min-w-0 space-y-3 xl:col-span-7">
         <Section id="overview">
           <Card>
             <CardHeader title="Flow overview" />
             <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
               <Stat
                 label="Put/Call ratio (5m)"
+                term="putCallRatio"
                 value={formatRatio(flow.putCallRatio)}
                 className={flow.putCallRatio > 1 ? 'text-bearish' : 'text-bullish'}
               />
-              <Stat label="Puts per 5m / session" value={`${measured ? formatCompact(flow.putVolume) : '—'} / ${formatCompact(flow.sessionPutVolume)}`} />
-              <Stat label="Calls per 5m / session" value={`${measured ? formatCompact(flow.callVolume) : '—'} / ${formatCompact(flow.sessionCallVolume)}`} />
-              <Stat label="Premium per 5m" value={measured ? formatPremium(flow.putPremium + flow.callPremium) : '—'} />
+              <Stat label="Puts per 5m / session" term="putsCalls5m" value={`${measured ? formatCompact(flow.putVolume) : '—'} / ${formatCompact(flow.sessionPutVolume)}`} />
+              <Stat label="Calls per 5m / session" term="putsCalls5m" value={`${measured ? formatCompact(flow.callVolume) : '—'} / ${formatCompact(flow.sessionCallVolume)}`} />
+              <Stat label="Premium per 5m" term="premium5m" value={measured ? formatPremium(flow.putPremium + flow.callPremium) : '—'} />
               <Stat
                 label="Chain price (delayed)"
+                term="chainPrice"
                 value={flow.underlyingPrice > 0 ? `$${flow.underlyingPrice.toFixed(2)}` : '—'}
                 className={flow.priceChangePct >= 0 ? 'text-bullish' : 'text-bearish'}
               />
-              <Stat label="Vol vs expected" value={`${flow.volumeVsExpected.toFixed(1)}×`} />
+              <Stat label="Vol vs expected" term="volVsExpected" value={`${flow.volumeVsExpected.toFixed(1)}×`} />
               <Stat
                 label="Net flow per 5m"
+                term="netFlow"
                 value={measured ? `${flow.netFlow > 0 ? '+' : ''}${formatCompact(flow.netFlow)}` : '—'}
                 className={measured ? (flow.netFlow > 0 ? 'text-bullish' : flow.netFlow < 0 ? 'text-bearish' : undefined) : 'text-slate-600'}
               />
@@ -874,7 +935,7 @@ function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
         </Section>
       </div>
 
-      <div className="space-y-3 xl:col-span-5">
+      <div className="min-w-0 space-y-3 xl:col-span-5">
         {data.trackRecord && (
           <Section id="track-record">
             <TrackRecordCard flow={flow} record={data.trackRecord} />
@@ -892,7 +953,13 @@ function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
         )}
       </div>
 
-      <div className="xl:col-span-12">
+      <div className="min-w-0 xl:col-span-12">
+        <Section id="relationships">
+          <RelationshipsCard symbol={flow.symbol} />
+        </Section>
+      </div>
+
+      <div className="min-w-0 xl:col-span-12">
         <Section id="history">
           <Card>
             <CardHeader title="Stored snapshots — latest 100 (5-min buckets, by data time)" />

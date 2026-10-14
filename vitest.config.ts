@@ -6,6 +6,9 @@ export default defineConfig({
     // (no DOM needed; DB-backed specs self-skip unless RUN_DB_TESTS=1).
     include: ['src/lib/**/*.test.ts', 'src/app/**/*.test.ts'],
     environment: 'node',
+    // The DB-backed specs share one throwaway database and each wipes it:
+    // run files one at a time when they are enabled.
+    fileParallelism: process.env.RUN_DB_TESTS !== '1',
   },
   resolve: {
     alias: { '@': new URL('./src', import.meta.url).pathname },

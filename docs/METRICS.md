@@ -523,6 +523,69 @@ gate as the seed scripts (`assertSeedAllowed`): it returns 403 under
 `NODE_ENV=production` and requires `ALLOW_SEED=1` elsewhere; every demo payload
 is stamped `demo:true` and bannered.
 
+## Projection, history check and relationships (ticker page)
+
+### Market-implied projection (`projection.ts`, per chain refresh)
+Per expiration (the nearest, plus the one closest to 7 / 30 / 60 / 90 / 180
+days; up to six):
+- **T** = calendar days from the chain's data time to the 16:00 ET close on
+  the expiry date ÷ 365.
+- **Forward** `F = K + (C − P)·e^{rT}` at the three strikes where call and put
+  mids are closest (median); `r = RISK_FREE_RATE` (default 0.04). Falls back
+  to spot without call/put pairs or if `|F/spot − 1| > 25%`.
+- **Smile**: the out-of-the-money quote at each strike (puts below F, calls
+  above), against `k = ln(K/F)`. ATM vol interpolated at k = 0. Fit: weighted
+  least squares `σ(k) = a + b·k + c·k²` over `|k| ≤ 3·σ_ATM·√T`, weights
+  `exp(−½(k/σ_ATM√T)²)`; linear if `c < 0`. Needs ≥ 5 quotes with ≥ 2 each
+  side, else **flat** (σ = ATM). Past the quoted range the smile continues on
+  its edge tangent (no slope kink), bounded to 0.5×–1.5× the quoted vols.
+- **Distribution**: `P(S_T > K) = N(d2) − φ(d2)·√T·σ'(k)`,
+  `d2 = (−k − σ²T/2)/(σ√T)` — the digital-call price with the smile slope
+  (Breeden–Litzenberger, first derivative). Evaluated on 41 points spanning
+  ±4 ATM standard deviations of log price; forced non-increasing; quantiles
+  2.5 / 16 / 50 / 84 / 97.5% by log-linear interpolation.
+- **Touch ≈** `2 × P(finish beyond)` (reflection principle; labelled approximate).
+- **Positioning**: call/put walls = strike with the most call/put OI among
+  expiries ≤ 60 days within ±25% of spot; gamma flip = zero crossing of
+  `Σ ±Γ_BS(S)·OI·100·S²·1%` (calls +, puts −, expiries ≤ 120 days) on a ±20%
+  grid, nearest spot.
+- Risk-neutral: includes the premium paid for protection. Unit-tested against
+  the closed-form lognormal quantiles and against call-spread prices.
+
+### History check — realized vs implied (`projection-history.ts`, nightly)
+For each finalized session with IV30 and a close h sessions later:
+`z = ln(close[t+h]/close[t]) / (IV30[t]/100 · √(days/365))`, h = 5 (7 days) or
+21 (30 days). Reported: RMS(z) = realized ÷ implied; share of |z| ≤ 1 and
+≤ 1.96; share below −1 / above +1. **Periods** = distinct start sessions ÷ h
+(overlapping windows are not independent evidence). Shrinkage: sector ratio
+toward 1 by `p/(p + 8)`, the stock toward the sector by its own `p/(p + 8)`;
+shown as evidence once either has ≥ 3 periods. The adjusted range rescales each
+bound's log-distance from the forward by the shrunk ratio.
+
+### Projection track record (`projection-jobs.ts`)
+`ProjectionLog`: the first finalized session of each ET week logs every name's
+~7- and ~30-day ranges (only from that day's chains), with the calibration
+ratio then in effect. Graded with the FINALIZED close on the expiry date (or the
+last close before it if the name stopped trading). Coverage = share inside 68%
+/ 95%, misses below / above, and the adjusted 68% on rows that had a ratio.
+Retention 400 days (~150k rows a year at ~1,400 names).
+
+### Relationships (`relationships.ts`, on demand, cached per finalized session)
+Eight measurements per finalized session: skew / IV / OI P/C / vol-premium
+sector z-scores (z30), IV rank (trailing-year percentile of IV30, ≥ 20 prior
+sessions), term slope, option volume ÷ trailing 20-session median (≥ 10 prior),
+5-session log return − SPY's. Outcome: next-10-session log return − SPY's.
+- **Leads**: Spearman ρ(measurement, outcome); t on n/10 effective
+  observations, notable at |t| ≥ 2; beat-SPY rate in the top vs bottom fifth.
+  Stock (≥ 40 rows) and sector pool (≥ 100 rows, up to 150 peers).
+- **Moves together**: Spearman ρ between day-over-day changes (consecutive
+  sessions only) of each pair and the same-day excess return; ≥ 30 pairs.
+- **Analogs**: robust z (1.4826·MAD over the pool) per measurement; distance =
+  RMS gap over shared measurements (≥ 4) + 0.5 per differing vol/trend regime;
+  25 nearest, at most one per stock per 10-session episode; needs ≥ 60 past
+  sessions with known outcomes. Summary: beat rate with Wilson 95% CI, median
+  and quartiles, against the base rate of the whole pool.
+
 ## Data-provenance flags
 
 - `final` / `capturedEt` — the pinned post-close snapshot. Only finalized rows

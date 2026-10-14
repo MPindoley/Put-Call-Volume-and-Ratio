@@ -464,6 +464,44 @@ Co-firing signals are often correlated (skew_z and divergence both read skew);
 a sum overstates them, a mean understates independent confirmation. √m is the
 compromise, and it is itself on trial in 5.6. Below 1 point it shows "—".
 
+### 5.8 The projection is the market's distribution, labelled as such
+The ticker page leads with the probability distribution option prices imply
+(`projection.ts`): skew-aware (smile slope in the digital formula), centred on
+the put-call-parity forward, per expiry. It is called market-implied /
+risk-neutral everywhere it appears and is never blended with the learned
+signals: the range answers "how far", the signal tilt (conviction) answers
+"which way", side by side. **If reversed** (shifting the distribution by the
+tilt, or presenting it as a forecast): a learned edge of a few points would be
+dressed up as a price target, and the risk premium in option prices would be
+read as real-world odds.
+
+### 5.9 History adjustment shrinks toward "as priced"
+Realized ÷ implied is measured per stock and sector over non-overlapping
+periods and shrunk (sector → 1, stock → sector, k = 8 periods). The adjusted
+range is shown beside, never instead of, the market's. **If reversed** (raw
+per-stock ratios): a stock with three quiet months would show a range a third
+the size the market prices, on no evidence.
+
+### 5.10 Projections grade themselves
+One logged projection per name per week (two horizons), graded at expiry with
+the finalized close, versioned by method. Weekly, not daily: daily logging of
+30-day ranges would be ~21× overlapping evidence for ~5× the storage. **If
+removed**: the range would be unfalsifiable — exactly what 5.6 forbids for
+convictions.
+
+### 5.11 Relationships are exploratory and carry their sample sizes
+Lead/lag correlations use overlap-adjusted t (n/10); analogs report their
+base rate, Wilson interval and distance; all refuse thin samples. They inform,
+they do not feed convictions: the signal grid stays fixed (4.3), so nothing
+found here silently becomes a signal. A relationship worth trading becomes a
+NEW signal type, logged and graded forward like the others.
+
+### 5.12 Every number defines itself
+`glossary.ts` is the one source for what each figure is, how it is computed,
+how to read it and where it misleads; `<Term>` renders it on hover, focus or
+tap, and the scanner headers append the same text. **If reversed** (ad-hoc
+tooltips): definitions drift between pages.
+
 ---
 
 ## 6. Cross-cutting invariants (the short list a reviewer should protect)
@@ -490,3 +528,6 @@ compromise, and it is itself on trial in 5.6. Below 1 point it shows "—".
 9. A row's flow comes from one feed at a time and deltas never cross feeds;
    IV/skew/OI/GEX analytics come from the feed of record (CBOE) only — a
    second feed may contribute counts, never its own model-derived numbers.
+10. Market-implied numbers are labelled risk-neutral, shown beside their own
+   graded track record, and never mixed with learned direction; history
+   adjustments shrink toward "as priced".
