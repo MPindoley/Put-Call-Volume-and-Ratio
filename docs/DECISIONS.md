@@ -126,8 +126,13 @@ With the operator's Schwab connection (`schwab-auth.ts`, `schwab.ts`,
 (watchlist, benchmarks, spiking, top `SCHWAB_HOT_SYMBOLS` by option volume,
 with 1.5× rank hysteresis) at ~100 requests/min. Schwab supplies ONLY the flow
 half of a row: volumes, P/C, premium, spike detection, and the live price.
-IV30, skew, OI, GEX, the event gauge and everything persisted for learning
-stay on CBOE for every name. Each feed keeps its own session state per
+IV30, skew, OI, GEX and the event gauge stay on CBOE for every name, and so
+do three of the four graded signals (skew_z, divergence, pc_extreme). Two
+volume-based inputs do pick up the real-time count on hot names: spike alerts
+(hence the spike_alert signal) fire from real-time data under the same rule,
+just earlier, and the day's option-volume total (`optVolume`, a liquidity
+floor) is the real-time session count. That is deliberate: a contract count
+is a fact both feeds agree on, counted the same way; IV is not. Each feed keeps its own session state per
 ticker (`FlowEngine` `primary` / `realtime`): deltas are only ever taken
 between two snapshots of the same feed, the overlay takes over a row only
 once it has measured a window of its own (≥1 min), and the delayed feed
@@ -483,5 +488,5 @@ compromise, and it is itself on trial in 5.6. Below 1 point it shows "—".
    short-window figures are rates over measured data time, never sums over
    whatever happened to arrive.
 9. A row's flow comes from one feed at a time and deltas never cross feeds;
-   analytics and everything learned from come from the feed of record (CBOE)
-   only.
+   IV/skew/OI/GEX analytics come from the feed of record (CBOE) only — a
+   second feed may contribute counts, never its own model-derived numbers.

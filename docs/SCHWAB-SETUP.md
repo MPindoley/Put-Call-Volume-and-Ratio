@@ -12,8 +12,10 @@ What changes when connected:
   benchmarks, anything flagged unusual, and the most active names. Each refreshes
   every one to two minutes. Those rows show a green dot next to the ticker, and
   the status pill reads **Real-time · N**.
-- **Unchanged:** IV30, IV rank, skew, open interest, dealer gamma and
-  everything the learning loop grades still come from CBOE for every name.
+- **Unchanged:** IV30, IV rank, skew, open interest and dealer gamma still
+  come from CBOE for every name, and so do the skew and open-interest signals
+  the learning loop grades. (Spike alerts on real-time names fire from the
+  real-time count under the same rule, just earlier.)
   Their history was built on CBOE's numbers, and Schwab computes IV
   differently, so mixing the two would move IV rank and the z-scores for
   reasons that have nothing to do with the market.
