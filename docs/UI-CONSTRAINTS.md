@@ -10,7 +10,7 @@ the two named gaps have been implemented to match.
 1. **Column budget.** The scan table is a dense, single-glance grid; it carries a
    fixed, small column set (currently 17: Ticker, Last, Conv, P/C, Puts 5m,
    Calls 5m, Net Flow, Prem 5m, IV30, IVR, Skew, OI P/C, zSkew30, zSkew90,
-   Unusual, P/C 30m, Updated). New signals do not get new columns — they go to
+   Unusual, P/C 30m, As of). New signals do not get new columns — they go to
    the ticker detail view or the right-panel tabs. Adding a column is a
    deliberate budget decision, not a default.
    *`Last` was added deliberately (15 → 16): it is not a signal but the
@@ -41,6 +41,13 @@ the two named gaps have been implemented to match.
    rather than borrowing the delayed chain price, and a quote older than 3
    minutes dims to slate instead of implying it is current. A price that claims
    to be live and is not is worse than no price.
+4a. **Every row says when its data is from.** The `As of` column is the
+   market time the row's option data reflects (the free feed runs 15 minutes
+   behind, and a re-served snapshot can be older still), not when it was
+   fetched; it dims when a row is much older than the feed's normal lag. The
+   `5m` columns are per-5-minute RATES measured over the latest data (hover a
+   cell for the minutes measured), so names refreshed at different speeds
+   compare like for like.
 5. **Sort, filter, pin, flash.** Columns are sortable; sector/flow filters and the
    top-bar ticker search narrow the set (an active search shows as a removable
    chip in the table toolbar, so a filtered table never passes for the full one);
@@ -48,7 +55,7 @@ the two named gaps have been implemented to match.
    change and then settles.
 5a. **Columns fit the width; they never push the page sideways.** The budget
    above is the full set. When the table is narrower than all of it, columns
-   drop in a fixed order, least important first — Updated, P/C 30m, zSkew90,
+   drop in a fixed order, least important first — As of, P/C 30m, zSkew90,
    Puts 5m + Calls 5m (as a pair), Prem 5m, IVR, OI P/C, zSkew30, Skew
    (`src/lib/table-columns.ts`, unit-tested). Ticker, Last, Conv, P/C, Net Flow,
    IV30 and Unusual never drop automatically. The Columns menu lets a user hide

@@ -5,6 +5,7 @@ import {
   fromYahooSymbol,
   parseSpark,
   toYahooSymbol,
+  pickQuoteSymbols,
 } from './quotes';
 
 describe('batching', () => {
@@ -91,5 +92,38 @@ describe('parseSpark', () => {
     expect(parseSpark({})).toEqual([]);
     expect(parseSpark({ spark: {} })).toEqual([]);
     expect(parseSpark({ spark: { result: [] } })).toEqual([]);
+  });
+});
+
+describe('pickQuoteSymbols', () => {
+  const universe = Array.from({ length: 1400 }, (_, i) => `S${i}`);
+  const activity = (s: string): number => 1_000_000 / (Number(s.slice(1)) + 1);
+  const base = {
+    universe,
+    activity,
+    always: new Set(['S1399', 'S1398']),
+    hotCount: 300,
+    fullEveryMs: 300_000,
+  };
+
+  it('sweeps everything when a full sweep is due', () => {
+    const pick = pickQuoteSymbols({ ...base, now: 1_000_000, lastFullSweepAt: 0 });
+    expect(pick.full).toBe(true);
+    expect(pick.symbols).toHaveLength(1400);
+  });
+
+  it('otherwise sweeps only the hot set: always-included names plus the most active', () => {
+    const pick = pickQuoteSymbols({ ...base, now: 1_000_000, lastFullSweepAt: 1_000_000 - 60_000 });
+    expect(pick.full).toBe(false);
+    expect(pick.symbols).toHaveLength(302);
+    expect(pick.symbols).toContain('S0');
+    expect(pick.symbols).toContain('S1399'); // watchlist/benchmark, however quiet
+    expect(pick.symbols).not.toContain('S900');
+  });
+
+  it('keeps the request rate near the old ~550-name sweep', () => {
+    // Per 5 minutes: 4 hot sweeps (302 names) + 1 full sweep (1,400), at 20 symbols per request.
+    const perFiveMin = 4 * Math.ceil(302 / 20) + Math.ceil(1400 / 20);
+    expect(perFiveMin / 5).toBeLessThan(30); // the old full sweep of 552 names every minute was ~28/min
   });
 });

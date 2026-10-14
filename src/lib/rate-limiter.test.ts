@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { TokenBucket, backoffDelay } from './rate-limiter';
+import { describe, expect, it, vi } from 'vitest';
+import { PermanentError, TokenBucket, backoffDelay, withBackoff } from './rate-limiter';
 
 /**
  * These pin the two bugs that produced a live 429 cascade: retries that were
@@ -66,5 +66,92 @@ describe('TokenBucket cooldown', () => {
 
   it('reports its configured ceiling', () => {
     expect(new TokenBucket(60).perMinute).toBe(60);
+  });
+});
+
+describe('withBackoff and permanent errors', () => {
+  it('does not retry an error retrying cannot fix', async () => {
+    let calls = 0;
+    await expect(
+      withBackoff(
+        async () => {
+          calls += 1;
+          throw new PermanentError('cboe 403');
+        },
+        { retries: 4, baseDelayMs: 1 },
+      ),
+    ).rejects.toThrow('cboe 403');
+    expect(calls).toBe(1);
+  });
+});
+
+describe('TokenBucket adapts to 429s', () => {
+  it('cuts the rate by a quarter on a 429 — once per pause, however many requests report it', () => {
+    const b = new TokenBucket(90);
+    b.penalize(15_000);
+    b.penalize(15_000); // other in-flight requests hitting the same 429
+    b.penalize(15_000);
+    expect(b.currentPerMinute).toBe(67);
+    expect(b.perMinute).toBe(90); // the configured ceiling is unchanged
+  });
+
+  it('never drops below a third of the ceiling', () => {
+    const b = new TokenBucket(90);
+    vi.useFakeTimers();
+    try {
+      for (let i = 0; i < 20; i++) {
+        b.penalize(1_000);
+        vi.advanceTimersByTime(1_001);
+      }
+      expect(b.currentPerMinute).toBe(30);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('recovers 5% of the ceiling per quiet minute, up to the ceiling', () => {
+    vi.useFakeTimers();
+    try {
+      const b = new TokenBucket(100);
+      b.penalize(1_000); // 100 → 75
+      vi.advanceTimersByTime(1_000 + 60_000);
+      expect(b.currentPerMinute).toBe(80);
+      for (let i = 0; i < 10; i++) {
+        vi.advanceTimersByTime(60_000);
+        b.currentPerMinute; // refill happens on access
+      }
+      expect(b.currentPerMinute).toBe(100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('banks no tokens during a pause, so it does not end in a burst', async () => {
+    vi.useFakeTimers();
+    try {
+      const b = new TokenBucket(600); // 10 tokens/s, ~50 bankable
+      b.penalize(5_000);
+      vi.advanceTimersByTime(5_000);
+      let served = 0;
+      for (let i = 0; i < 20; i++) void b.acquire().then(() => (served += 1));
+      await vi.advanceTimersByTimeAsync(10); // just after the pause
+      expect(served).toBeLessThanOrEqual(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('banks at most ~5 seconds of budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const b = new TokenBucket(120); // 2/s → at most 10 banked
+      vi.advanceTimersByTime(10 * 60_000); // a long idle spell
+      let served = 0;
+      for (let i = 0; i < 50; i++) void b.acquire().then(() => (served += 1));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(served).toBeLessThanOrEqual(10);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

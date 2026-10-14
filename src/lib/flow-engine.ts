@@ -2,9 +2,10 @@
  * FlowEngine — the in-memory source of truth for live state.
  *
  * The poller feeds it cumulative session snapshots per ticker; the engine
- * derives per-cycle deltas, maintains rolling 5-minute windows, 30-minute
- * ratio sparklines, aggregate/sector ratios and the intraday ratio series,
- * and runs spike detection. API routes and the socket layer only read from it.
+ * derives deltas between snapshots, timed by each snapshot's DATA time
+ * (flow-window.ts), turns them into per-5-minute rates, keeps 30-minute ratio
+ * sparklines, aggregate/sector ratios and the intraday ratio series, and runs
+ * spike detection. API routes and the socket layer only read from it.
  *
  * A single instance lives on globalThis so the custom server, Next.js API
  * routes and dev-mode HMR all share state within the one process.
@@ -27,34 +28,32 @@ import type {
 } from '@/types';
 import { DEFAULT_SETTINGS } from '@/types';
 import { computeChainAnalytics } from './chain-analytics';
+import { MIN_COVERAGE_MS, pruneIntervals, windowFlow, type FlowInterval } from './flow-window';
 import { buildEventGauge, type EventGaugeInput } from './event-analytics';
 import { classifyOiFlow, defaultInstrument, sideIvChanges, type InstrumentConfig } from './interpretation';
 import { apiStats } from './data-source';
 import type { OptionsChainAggregate } from './provider';
 import { aggregateRatio, percentileRank, putCallRatio, sectorRatios } from './ratio-calculator';
 import { SpikeDetector } from './spike-detector';
-import { isTradingDayNow } from './trading-calendar';
+import { etDateKey, isTradingDayNow } from './trading-calendar';
 import { sectorOf } from './universe';
 import { isMarketHours } from './utils';
 
-const ROLLING_WINDOW_MS = 5 * 60_000;
 const SPARKLINE_POINTS = 30; // 1-min resolution, 30 minutes
 const MAX_ALERTS = 200;
 const RATIO_SERIES_MAX = 500;
 
-interface Sample {
-  t: number;
-  putVolume: number;
-  callVolume: number;
-  putPremium: number;
-  callPremium: number;
-}
-
 interface TickerState {
-  /** Last cumulative snapshot, for delta derivation. */
+  /**
+   * Last cumulative snapshot, for delta derivation. Stored WITHOUT its contract
+   * list: only the totals are needed, and holding every chain's contracts for
+   * the whole universe costs hundreds of MB of RAM for nothing.
+   */
   cumulative: OptionsChainAggregate | null;
-  /** Per-cycle deltas inside the rolling window. */
-  samples: Sample[];
+  /** Data time of `cumulative` (epoch ms). */
+  cumulativeAt: number;
+  /** Deltas between successive snapshots, on the data clock (ascending). */
+  intervals: FlowInterval[];
   sparkline: { t: number; ratio: number }[];
   flow: TickerFlow;
 }
@@ -104,54 +103,67 @@ export class FlowEngine {
   /** 20-day aggregate-ratio history for percentile ranking (loaded from DB). */
   historicalRatios: number[] = [];
 
-  /** Ingest a fresh cumulative snapshot for one ticker. Returns the updated row. */
+  /**
+   * Ingest a cumulative snapshot for one ticker. Returns the updated row.
+   *
+   * `now` is when it was fetched; `agg.asOf` is the market moment it reflects
+   * (a delayed feed lags the fetch, and a CDN can hand back a snapshot that is
+   * older still). All flow timing uses the data time. A snapshot no newer than
+   * the last one carries no new information and is not counted again — it
+   * would otherwise log a zero-volume interval (a false lull) and count as a
+   * second confirming cycle for a spike that never re-occurred.
+   */
   ingest(agg: OptionsChainAggregate, now = Date.now()): TickerFlow {
     const st = this.tickers.get(agg.symbol) ?? this.initTicker(agg.symbol);
+    const asOf = agg.asOf ?? now;
 
-    // Delta vs previous cumulative snapshot. Providers report day volumes
-    // that only grow intraday; a drop means a new session started.
     const prev = st.cumulative;
-    const newSession = prev !== null && agg.putVolume + agg.callVolume < prev.putVolume + prev.callVolume;
-    const base = newSession || prev === null ? null : prev;
-    const sample: Sample = {
-      t: now,
-      putVolume: Math.max(0, agg.putVolume - (base?.putVolume ?? 0)),
-      callVolume: Math.max(0, agg.callVolume - (base?.callVolume ?? 0)),
-      putPremium: Math.max(0, agg.putPremium - (base?.putPremium ?? 0)),
-      callPremium: Math.max(0, agg.callPremium - (base?.callPremium ?? 0)),
-    };
-    st.cumulative = agg;
-    if (newSession) st.samples = [];
-    st.samples.push(sample);
-    const cutoff = now - ROLLING_WINDOW_MS;
-    st.samples = st.samples.filter((s) => s.t > cutoff);
-
-    let putVolume = 0;
-    let callVolume = 0;
-    let putPremium = 0;
-    let callPremium = 0;
-    for (const s of st.samples) {
-      putVolume += s.putVolume;
-      callVolume += s.callVolume;
-      putPremium += s.putPremium;
-      callPremium += s.callPremium;
+    const sameDay =
+      prev !== null && etDateKey(new Date(asOf)).getTime() === etDateKey(new Date(st.cumulativeAt)).getTime();
+    if (prev !== null && sameDay && asOf <= st.cumulativeAt) {
+      st.flow = { ...st.flow, lastUpdated: now };
+      this.tickers.set(agg.symbol, st);
+      return st.flow;
     }
+    // A new ET date, or day volumes falling on a NEWER snapshot, means a new session.
+    const newSession =
+      prev !== null && (!sameDay || agg.putVolume + agg.callVolume < prev.putVolume + prev.callVolume);
 
-    // Rolling-window ratio when there's flow; otherwise session ratio.
-    const windowHasFlow = putVolume + callVolume > 0;
+    if (newSession) st.intervals = [];
+    else if (prev !== null) {
+      st.intervals.push({
+        start: st.cumulativeAt,
+        end: asOf,
+        putVolume: Math.max(0, agg.putVolume - prev.putVolume),
+        callVolume: Math.max(0, agg.callVolume - prev.callVolume),
+        putPremium: Math.max(0, agg.putPremium - prev.putPremium),
+        callPremium: Math.max(0, agg.callPremium - prev.callPremium),
+      });
+      st.intervals = pruneIntervals(st.intervals);
+    }
+    st.cumulative = { ...agg, contracts: undefined };
+    st.cumulativeAt = asOf;
+
+    const w = windowFlow(st.intervals);
+    const { putVolume, callVolume, putPremium, callPremium } = w;
+
+    // Window ratio when the window measured flow; otherwise the session ratio.
+    const windowHasFlow = w.rawPutVolume + w.rawCallVolume > 0;
     const ratio = windowHasFlow
-      ? putCallRatio(putVolume, callVolume)
+      ? putCallRatio(w.rawPutVolume, w.rawCallVolume)
       : putCallRatio(agg.putVolume, agg.callVolume);
 
-    // Sparkline: one point per minute.
+    // Sparkline: at most one point per minute of data time.
     const lastPoint = st.sparkline[st.sparkline.length - 1];
-    if (!lastPoint || now - lastPoint.t >= 60_000) {
-      st.sparkline.push({ t: now, ratio });
+    if (!lastPoint || asOf - lastPoint.t >= 60_000) {
+      st.sparkline.push({ t: asOf, ratio });
       if (st.sparkline.length > SPARKLINE_POINTS) st.sparkline.shift();
     } else {
       lastPoint.ratio = ratio;
     }
 
+    // Expected-volume curves are by time of day: judge the session volume
+    // against the moment it reflects, not the (later) moment it arrived.
     const spike = this.detector.evaluate(
       {
         symbol: agg.symbol,
@@ -162,6 +174,7 @@ export class FlowEngine {
         largestContractVolume: agg.largestContractVolume,
       },
       this.settings,
+      new Date(asOf),
     );
 
     // Chain analytics: simulator supplies them; live providers pass contracts.
@@ -228,6 +241,8 @@ export class FlowEngine {
       eventGauge,
       idiosyncraticMoves: this.idiosyncraticMoves.get(agg.symbol) ?? [],
       lastUpdated: now,
+      dataAsOf: asOf,
+      flowWindowMs: w.coveredMs >= MIN_COVERAGE_MS ? Math.round(w.coveredMs) : null,
       lastDelta: netFlow > 0 ? 'bullish' : netFlow < 0 ? 'bearish' : 'none',
     };
     this.tickers.set(agg.symbol, st);
@@ -405,7 +420,8 @@ export class FlowEngine {
   private initTicker(symbol: string): TickerState {
     return {
       cumulative: null,
-      samples: [],
+      cumulativeAt: 0,
+      intervals: [],
       sparkline: [],
       flow: {
         symbol,
@@ -441,6 +457,8 @@ export class FlowEngine {
         eventGauge: null,
         idiosyncraticMoves: [],
         lastUpdated: 0,
+        dataAsOf: 0,
+        flowWindowMs: null,
         lastDelta: 'none',
       },
     };

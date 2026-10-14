@@ -79,6 +79,40 @@ export function parseSpark(body: SparkResponse): LiveQuote[] {
   return out;
 }
 
+/**
+ * Which symbols the next sweep should cover. Yahoo's spark endpoint takes 20
+ * symbols per request and is undocumented, so the request rate is kept near
+ * what a ~550-name universe used (~28/min): every sweep covers the HOT set —
+ * benchmarks, the watchlist and the most active names — and the whole universe
+ * is swept only every `fullEveryMs`. Quiet names' prices therefore refresh
+ * every few minutes instead of every minute; their chains refresh far less
+ * often than that anyway.
+ */
+export function pickQuoteSymbols(opts: {
+  /** Every tracked symbol, in universe order. */
+  universe: readonly string[];
+  /** Session option volume per symbol (0 = unknown). */
+  activity: (symbol: string) => number;
+  /** Always included (benchmarks, watchlist). */
+  always: ReadonlySet<string>;
+  hotCount: number;
+  now: number;
+  lastFullSweepAt: number;
+  fullEveryMs: number;
+}): { symbols: string[]; full: boolean } {
+  const { universe, activity, always, hotCount, now, lastFullSweepAt, fullEveryMs } = opts;
+  if (now - lastFullSweepAt >= fullEveryMs || universe.length <= hotCount + always.size) {
+    return { symbols: [...universe], full: true };
+  }
+  const hot = new Set(always);
+  const ranked = [...universe].sort((a, b) => activity(b) - activity(a));
+  for (const s of ranked) {
+    if (hot.size >= hotCount + always.size) break;
+    if (activity(s) > 0) hot.add(s);
+  }
+  return { symbols: universe.filter((s) => hot.has(s)), full: false };
+}
+
 export class QuoteClient {
   readonly name = 'yahoo-spark';
   /** Batches that failed on the most recent sweep (surfaced for the status bar). */

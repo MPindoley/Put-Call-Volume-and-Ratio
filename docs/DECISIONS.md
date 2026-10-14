@@ -47,6 +47,77 @@ tier; the engine singleton would need external state.
 devDependencies — a build once failed on a missing module. **If reversed:** the
 deploy build breaks again.
 
+### 0.5 Flow is timed by the DATA's clock, and short windows are rates (`flow-window.ts`)
+A chain snapshot reports cumulative day volume; the difference between two is
+the volume traded between their DATA times (CBOE: snapshot timestamp − 15 min,
+`snapshotDataTime`). Each delta is an interval; "Puts/Calls 5m", net flow, 5m
+premium and the windowed P/C cover the five minutes of data ending at the newest
+snapshot, pro rata across straddling intervals, scaled to a per-5-minute rate.
+A snapshot no newer than the last is ignored (the CDN re-serves stale ones —
+measured: one name's snapshot 15 min older than SPY's at the same moment).
+**Reasoning:** summing whatever arrived in the last five wall-clock minutes made
+a hot name's "5m" cover ~2 minutes and a typical one's ~9, recorded a false lull
+for every re-served snapshot, and counted it as a second confirming cycle for
+spike alerts. Rows carry `dataAsOf` (shown as "As of") and `flowWindowMs`;
+snapshots persist under the bucket of their data time; the detector's
+time-of-day expectation uses the data time. **If reversed:** cross-name
+comparisons of short-window flow are meaningless again.
+
+### 0.6 Tiered refresh within the rate budget (`refresh-schedule.ts`)
+Watchlist, spiking, benchmark and the ~100 most active names have a 3-minute
+base interval, the next 300 10 minutes, the rest 30; the base intervals are
+scaled together so total demand equals `CBOE_RPM`, and each cycle takes the
+most overdue names. Activity = today's session option volume, else the last
+recorded day's. Order within a cycle: due names (most overdue first), then
+never-fetched names (busiest first), then the rest; a never-fetched name counts
+elapsed time from startup. Measured live after a restart, both simpler rules
+failed: never-fetched-first spent the whole first ~16-minute pass on first
+fetches (no second snapshot, so no 5-minute rate, even for SPY);
+most-overdue-first kept re-fetching the first hundred names before they were
+due and stalled the backlog. Cycles run back to back: a cycle's
+batch is one interval of budget paced at exactly the budget rate, so on a fixed
+cron tick every other tick was skipped (≈ half the rate idle). HTTP 403/404 is
+not retried, and a failed attempt is stamped so the name waits its interval
+instead of being re-picked first forever. **Reasoning:** with ~1,400 names a
+uniform rotation would make every name wait ~16 minutes at 90/min, while most
+volume sits in the top few hundred. **If reversed:** universe size trades
+directly against freshness.
+
+### 0.7 Universe = curated core + measured extension (`build-universe.mjs`)
+The hand-curated ~540 names stay; `universe-extended.ts` adds names chosen by
+MEASURED total open interest from CBOE chains (pre-ranked by dollar volume;
+leveraged/inverse ETFs excluded), sectors mapped from Nasdaq industry text (85%
+agreement with the curated core's hand-checked sectors; the rest are genuinely
+ambiguous cases such as interactive media vs software). Generated, not edited;
+re-run every few months. **Reasoning:** "as many stocks as possible" on a free
+feed means the names whose options actually trade; ~4,400 have listed options
+but most trade too thinly for a meaningful ratio. `CBOE_RPM` default 60 → 90,
+now a CEILING: the CDN's tolerance depends on burstiness and its own load (an
+even 3 req/s drew 38 429s in ~2,200 requests; live at 90/min the app drew 2–16
+per run, most near the close). The token bucket therefore cuts its rate by a
+quarter on a 429 (once per pause), recovers 5% of the ceiling per quiet minute,
+banks at most ~5 s of budget, and accrues nothing during a pause — measured
+before this, each pause ended in a 20+ request burst that drew the next 429.
+
+### 0.8 Storage stays inside a free 0.5 GB database
+Measured on Postgres: ~180 B per FlowSnapshot row, ~300 B per DailyMetric row
+(with indexes). Intraday snapshots keep full resolution for 5 days, then thin
+to the last row per symbol per day (`downsampleSnapshots` — cumulative, so it
+carries the day totals baselines read); RelativeMetric gets the same 400-day
+horizon as DailyMetric. **Reasoning:** at ~1,400 names untrimmed snapshots alone
+reach ~140 MB and RelativeMetric grows ~140 MB a year. **If reversed:** the free
+database fills within about a year.
+
+### 0.9 Outbound bytes: compact price ticks, compressed frames
+Live-price sweeps push `[symbol, price, change%, time]` tuples (`quote-update`),
+not full rows; socket frames over 1 KB are deflated; the full table is sent once
+per connection (on the client's `request-snapshot`), not twice; the ticker page
+reads its latest 100 snapshots, not 30 days of them every 15 s. **Reasoning:**
+outbound traffic is what a host meters; resending every ~3 KB row each minute
+to move one price was the largest stream. The Yahoo sweep covers the hot set
+every minute and the whole universe every 5 minutes, keeping its request rate
+near the old 552-name sweep.
+
 ---
 
 ## 1. Sector-relative layer (Phase 1)
@@ -373,3 +444,6 @@ compromise, and it is itself on trial in 5.6. Below 1 point it shows "—".
    identity, caching, backoff — the free-data constraint is a hard one.
 7. Learning only weights the fixed signal grid; every learned number is
    point-in-time, shrunk on thin evidence, and graded against what happened.
+8. Every chain-derived number carries the market time it reflects (`dataAsOf`);
+   short-window figures are rates over measured data time, never sums over
+   whatever happened to arrive.

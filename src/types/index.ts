@@ -161,18 +161,20 @@ export interface SideFlow {
 export interface TickerFlow {
   symbol: string;
   sector: Sector;
-  /** Rolling 5-minute put volume (contracts). */
+  /**
+   * Put / call contracts per 5 minutes, measured over the most recent data
+   * (flow-window.ts): a rate, so names refreshed at different speeds compare.
+   */
   putVolume: number;
-  /** Rolling 5-minute call volume (contracts). */
   callVolume: number;
   /** Session cumulative volumes. */
   sessionPutVolume: number;
   sessionCallVolume: number;
-  /** put / call over the rolling window; falls back to session ratio. */
+  /** put / call over the measured window; falls back to the session ratio. */
   putCallRatio: number;
-  /** callVolume - putVolume over rolling window. */
+  /** callVolume − putVolume (per 5 minutes). */
   netFlow: number;
-  /** Rolling 5-minute notional premium in USD. */
+  /** Notional premium per 5 minutes, USD. */
   callPremium: number;
   putPremium: number;
   spikeLevel: SpikeLevel;
@@ -225,8 +227,17 @@ export interface TickerFlow {
   eventGauge: EventGauge | null;
   /** Recent large unscheduled single-name moves (idiosyncratic feed); newest first. */
   idiosyncraticMoves: IdiosyncraticMove[];
-  /** Epoch ms of last successful data refresh for this ticker. */
+  /** Epoch ms this ticker was last fetched. */
   lastUpdated: number;
+  /**
+   * Epoch ms of the market moment the data reflects (0 = no data yet). With the
+   * free feed this trails the fetch by its 15-minute delay, and more when the
+   * provider hands back an older snapshot — the honest "as of" for every
+   * chain-derived number in the row.
+   */
+  dataAsOf: number;
+  /** Data time the 5-minute figures were measured over (ms), or null when there is too little yet. */
+  flowWindowMs: number | null;
   /** Direction of the most recent net-flow delta, used for row flashing. */
   lastDelta: 'bullish' | 'bearish' | 'none';
 }
@@ -370,8 +381,17 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 // ─── Socket.io event payloads ─────────────────────────────────────────────────
 
+/** A live price for one symbol: [symbol, price, % change vs prior close, venue trade time ms]. */
+export type QuoteTick = [symbol: string, price: number, changePct: number | null, at: number];
+
 export interface ServerToClientEvents {
   'flow-update': (rows: TickerFlow[]) => void;
+  /**
+   * Live-price sweep results. Deliberately NOT full rows: a sweep touches most
+   * of the universe every minute, and resending every row (~3 KB each) to move
+   * one price field was ~70× the bytes of these tuples.
+   */
+  'quote-update': (ticks: QuoteTick[]) => void;
   'spike-alert': (alert: SpikeAlert) => void;
   'ratio-update': (
     agg: AggregateRatio,

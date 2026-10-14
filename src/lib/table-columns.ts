@@ -63,7 +63,7 @@ export const COLUMN_DEFS: readonly ColumnDef[] = [
   { id: 'skewZ90', label: 'zSkew90', width: 64, dropRank: 7, hideable: true },
   { id: 'spikeScore', label: 'Unusual', width: 112, dropRank: 0, hideable: true },
   { id: 'sparkline', label: 'P/C 30m', width: 112, dropRank: 8, hideable: true },
-  { id: 'lastUpdated', label: 'Updated', width: 64, dropRank: 9, hideable: true },
+  { id: 'lastUpdated', label: 'As of', width: 64, dropRank: 9, hideable: true },
 ];
 
 /** Horizontal padding of a row (px-3 each side) and the gap between cells (gap-2). */

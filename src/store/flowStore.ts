@@ -17,6 +17,7 @@ import type {
   RatioPoint,
   SectorDispersion,
   SectorRatio,
+  QuoteTick,
   SpikeAlert,
   TickerFlow,
 } from '@/types';
@@ -64,6 +65,8 @@ interface FlowState {
   pinned: string[];
 
   applyFlowUpdate: (rows: TickerFlow[]) => void;
+  /** Merge live prices into existing rows (only the price fields change). */
+  applyQuoteUpdate: (ticks: QuoteTick[]) => void;
   applyRatioUpdate: (
     agg: AggregateRatio,
     sectors: SectorRatio[],
@@ -133,6 +136,19 @@ export const useFlowStore = create<FlowState>()(
           nextRows[row.symbol] = row;
         }
         set({ rows: nextRows, flashes: nextFlashes });
+      },
+
+      applyQuoteUpdate: (ticks) => {
+        const { rows } = get();
+        let next: Record<string, TickerFlow> | null = null;
+        for (const [symbol, price, changePct, at] of ticks) {
+          const row = rows[symbol];
+          if (!row || (row.livePrice === price && row.livePriceAt === at)) continue;
+          next ??= { ...rows };
+          // New object for a changed row only, so memoized table rows re-render just where the price moved.
+          next[symbol] = { ...row, livePrice: price, livePriceChangePct: changePct, livePriceAt: at };
+        }
+        if (next) set({ rows: next });
       },
 
       applyRatioUpdate: (aggregate, sectors, point, market, dispersions) =>
@@ -227,7 +243,7 @@ export function selectVisibleRows(state: FlowState): TickerFlow[] {
       case 'oiPutCall': return r.analytics?.oiPutCall ?? -1;
       case 'skewZ30': return r.sectorRelative?.skewZ30 ?? -999;
       case 'skewZ90': return r.sectorRelative?.skewZ90 ?? -999;
-      case 'lastUpdated': return r.lastUpdated;
+      case 'lastUpdated': return r.dataAsOf; // the 'As of' column: market time of the data
     }
   };
   list.sort((a, b) => {
