@@ -553,6 +553,20 @@ model UserSettings {
   updatedAt          DateTime @updatedAt
 }
 
+/// The owner's broker connection (Schwab real-time chains, schwab-auth.ts).
+/// One row per provider. Token values are AES-256-GCM ciphertext, never
+/// plaintext: a leaked database or backup alone does not grant account access.
+model BrokerToken {
+  provider        String   @id
+  accessToken     String
+  refreshToken    String
+  accessExpiresAt DateTime
+  /// When the owner last signed in. Schwab refresh tokens die 7 days after
+  /// this regardless of use, so it drives the "reconnect by" countdown.
+  authorizedAt    DateTime
+  updatedAt       DateTime @updatedAt
+}
+
 model TickerOverride {
   symbol       String  @id
   sensitivity  Float?

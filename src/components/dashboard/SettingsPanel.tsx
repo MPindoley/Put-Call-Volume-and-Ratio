@@ -5,6 +5,7 @@
  * cadence, sound, watchlist. Persists via PUT /api/settings (DB-backed when
  * available) and applies to the running detector immediately.
  */
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useSettingsStore } from '@/store/settingsStore';
 import { formatPremium } from '@/lib/utils';
@@ -49,6 +50,15 @@ export function SettingsPanel(): JSX.Element {
                 ✕
               </button>
             </div>
+
+            <Link
+              href="/connections"
+              onClick={() => setOpen(false)}
+              className="mb-4 flex items-center justify-between rounded-md border border-surface-border px-3 py-2 text-xs text-slate-300 hover:bg-surface-overlay"
+            >
+              <span>Data sources · Schwab real-time</span>
+              <span aria-hidden>→</span>
+            </Link>
 
             <div className="space-y-5 text-xs">
               <label className="block">

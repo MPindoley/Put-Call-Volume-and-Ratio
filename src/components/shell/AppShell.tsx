@@ -21,6 +21,7 @@ import { PanelBoundary } from '@/components/ui/panel-boundary';
 import { useOptionsFlow } from '@/hooks/useOptionsFlow';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { cn } from '@/lib/utils';
+import { useFlowStore } from '@/store/flowStore';
 import { MarketStatus } from './MarketStatus';
 import { StatusFooter } from './StatusFooter';
 import { TickerSearch } from './TickerSearch';
@@ -32,9 +33,15 @@ export const NAV: { href: string; label: string; hint: string }[] = [
 ];
 
 export function AppShell({ children }: { children: ReactNode }): JSX.Element {
+  const pathname = usePathname();
+  // The sign-in page stands alone: no socket, no data fetches before unlocking.
+  if (pathname === '/login') return <>{children}</>;
+  return <Shell pathname={pathname}>{children}</Shell>;
+}
+
+function Shell({ children, pathname }: { children: ReactNode; pathname: string }): JSX.Element {
   useWebSocket();
   const { isError } = useOptionsFlow();
-  const pathname = usePathname();
 
   return (
     <div className="flex h-screen flex-col">
@@ -81,6 +88,8 @@ export function AppShell({ children }: { children: ReactNode }): JSX.Element {
         </div>
       </header>
 
+      <ReconnectBanner />
+
       {isError && (
         <p className="shrink-0 border-b border-bearish/40 bg-bearish/10 px-4 py-1.5 text-xs text-bearish">
           Backend unreachable — showing last known data. Retrying automatically.
@@ -97,5 +106,28 @@ export function AppShell({ children }: { children: ReactNode }): JSX.Element {
       <AlertToasts />
       <KeyboardShortcuts />
     </div>
+  );
+}
+
+/**
+ * Schwab ends every sign-in after 7 days. Warn a day ahead, and say plainly
+ * when it has lapsed (flow then silently falls back to the delayed feed).
+ */
+function ReconnectBanner(): JSX.Element | null {
+  const rt = useFlowStore((s) => s.status?.realtime ?? null);
+  if (!rt || rt.state === 'signed-out' || rt.state === 'unlocked') return null;
+  const left = rt.reconnectBy !== null ? rt.reconnectBy - Date.now() : null;
+  const expired = rt.state === 'expired';
+  if (!expired && (left === null || left > 86_400_000)) return null;
+  const hours = left !== null ? Math.max(0, Math.floor(left / 3_600_000)) : 0;
+  return (
+    <p className="shrink-0 border-b border-caution/40 bg-caution/10 px-4 py-1.5 text-xs text-caution">
+      {expired
+        ? 'Schwab sign-in expired — flow is back on the 15-minute delayed feed. '
+        : `Schwab sign-in expires in ${hours < 1 ? 'under an hour' : `${hours}h`}. `}
+      <Link href="/connections" className="font-medium underline underline-offset-2">
+        Reconnect
+      </Link>
+    </p>
   );
 }

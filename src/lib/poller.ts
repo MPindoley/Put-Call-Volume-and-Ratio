@@ -26,6 +26,9 @@ import { backfillRegimeHistory } from './regime-jobs';
 import { loadConvictionsIntoEngine } from './learning-jobs';
 import { loadLatestIntoEngine } from './sector-analytics';
 import { getQuoteClient, pickQuoteSymbols, type QuoteClient } from './quotes';
+import { RealtimeFeed } from './realtime-feed';
+import { SchwabClient } from './schwab';
+import { getSchwabAuth } from './schwab-auth';
 import { FlowSimulator } from './simulator';
 import { isTradingDayNow } from './trading-calendar';
 import { planRefresh, type RefreshCandidate } from './refresh-schedule';
@@ -59,6 +62,8 @@ export class Poller {
   private maintenanceTask: cron.ScheduledTask | null = null;
   private eodTask: cron.ScheduledTask | null = null;
   private edgarTask: cron.ScheduledTask | null = null;
+  /** Schwab real-time overlay for the hot set (realtime-feed.ts); null when not configured. */
+  private realtime: RealtimeFeed | null = null;
 
   constructor(private io: IO | null) {
     this.engine = getFlowEngine();
@@ -96,6 +101,26 @@ export class Poller {
     // was skipped, idling the budget for a whole interval — measured at roughly
     // half the configured request rate actually used.
     this.loopTimer = setTimeout(() => void this.loop(intervalSec * 1000), warmupMs);
+
+    // Real-time overlay (Schwab) for the hot set, on its own loop and rate
+    // budget. Live data only: never mixed into the simulator.
+    const schwab = getSchwabAuth();
+    if (schwab && provider) {
+      const rpm = Math.max(1, Number(process.env.SCHWAB_RPM ?? 100));
+      const hotSize = Math.max(1, Number(process.env.SCHWAB_HOT_SYMBOLS ?? 200));
+      this.realtime = new RealtimeFeed(this.engine, schwab, new SchwabClient(schwab, rpm), {
+        intervalMs: Math.max(10, Number(process.env.SCHWAB_INTERVAL_SEC ?? 20)) * 1000,
+        hotSize,
+        concurrency: 4,
+        universe: () => TRACKED_UNIVERSE.map((u) => u.symbol),
+        activity: (s) => this.activityOf(s),
+        pinned: () => ({ watch: new Set(this.engine.settings.watchlist), benchmarks: BENCHMARK_SYMBOLS }),
+        shouldIdle: () => this.shouldIdle(),
+        publish: (updated) => this.publish(updated),
+      });
+      console.log(`[poller] real-time overlay: schwab, ${rpm}/min, hot set ${hotSize} names`);
+      this.realtime.start(warmupMs + 4_000);
+    }
 
     // Live-quote sweep on its own, much faster cadence: the hot set every pass,
     // the whole universe every few minutes (see quoteCycle), so price freshness
@@ -137,10 +162,7 @@ export class Poller {
       const watch = new Set(this.engine.settings.watchlist);
       const { symbols, full } = pickQuoteSymbols({
         universe: TRACKED_UNIVERSE.map((u) => u.symbol),
-        activity: (s) => {
-          const f = this.engine.getFlow(s);
-          return f && f.lastUpdated > 0 ? f.sessionPutVolume + f.sessionCallVolume : (this.priorActivity.get(s) ?? 0);
-        },
+        activity: (s) => this.activityOf(s),
         always: new Set([...BENCHMARK_SYMBOLS, ...watch]),
         hotCount: Math.max(0, Number(process.env.QUOTE_HOT_SYMBOLS ?? 300)),
         now,
@@ -174,9 +196,17 @@ export class Poller {
     this.loopTimer = setTimeout(() => void this.loop(intervalMs), Math.max(0, intervalMs - (Date.now() - startedAt)));
   }
 
+  /** Option volume today once seen, else the last recorded day's (DB); 0 = unknown. */
+  private activityOf(symbol: string): number {
+    const f = this.engine.getFlow(symbol);
+    const today = f && f.lastUpdated > 0 ? f.sessionPutVolume + f.sessionCallVolume : 0;
+    return today > 0 ? today : (this.priorActivity.get(symbol) ?? 0);
+  }
+
   stop(): void {
     this.stopped = true;
     if (this.loopTimer) clearTimeout(this.loopTimer);
+    this.realtime?.stop();
     this.quoteTask?.stop();
     this.maintenanceTask?.stop();
     this.eodTask?.stop();
@@ -282,13 +312,7 @@ export class Poller {
         this.engine.mode === 'simulated' ? this.simulateCycle() : await this.liveCycle();
 
       await this.refreshMarketContext();
-      const { aggregate, sectors, point } = this.engine.finalizeCycle();
-      if (this.io && updated.length > 0) {
-        this.io.emit('flow-update', updated);
-        this.io.emit('ratio-update', aggregate, sectors, point, this.engine.marketContext, this.engine.getSectorDispersions());
-      }
-      this.io?.emit('connection-status', this.engine.status());
-      await this.persistCycle(point.time * 1000, updated);
+      await this.publish(updated);
     } catch (err) {
       console.error('[poller] cycle failed:', err);
     } finally {
@@ -296,6 +320,20 @@ export class Poller {
       const elapsed = Date.now() - startedAt;
       if (elapsed > 5_000) console.log(`[poller] cycle took ${elapsed}ms`);
     }
+  }
+
+  /**
+   * After a batch from either loop (delayed or real-time): recompute the
+   * aggregate and sector ratios, push the changed rows, persist them.
+   */
+  private async publish(updated: TickerFlow[]): Promise<void> {
+    const { aggregate, sectors, point } = this.engine.finalizeCycle();
+    if (this.io && updated.length > 0) {
+      this.io.emit('flow-update', updated);
+      this.io.emit('ratio-update', aggregate, sectors, point, this.engine.marketContext, this.engine.getSectorDispersions());
+    }
+    this.io?.emit('connection-status', this.engine.status());
+    await this.persistCycle(point.time * 1000, updated);
   }
 
   /** VIX / VIX3M term structure: free from the CBOE index-quote endpoint. */
@@ -379,11 +417,10 @@ export class Poller {
     const watch = new Set(this.engine.settings.watchlist);
     const candidates: RefreshCandidate[] = TRACKED_UNIVERSE.map(({ symbol }) => {
       const flow = this.engine.getFlow(symbol);
-      const today = flow && flow.lastUpdated > 0 ? flow.sessionPutVolume + flow.sessionCallVolume : 0;
       return {
         symbol,
         lastFetched: this.lastFetched.get(symbol) ?? 0,
-        activity: today > 0 ? today : (this.priorActivity.get(symbol) ?? 0),
+        activity: this.activityOf(symbol),
         watch: watch.has(symbol),
         spiking: flow !== null && flow.spikeLevel !== 'normal',
         benchmark: BENCHMARK_SYMBOLS.has(symbol),

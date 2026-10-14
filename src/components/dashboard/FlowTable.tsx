@@ -184,6 +184,13 @@ function TickerCell({ row, pinned }: { row: TickerFlow; pinned: boolean }): JSX.
       <Link href={`/ticker/${row.symbol}`} prefetch={false} className="font-semibold text-slate-100 hover:text-blue-400">
         {row.symbol}
       </Link>
+      {row.realtime && (
+        <span
+          className="h-1.5 w-1.5 rounded-full bg-bullish"
+          aria-label="real-time"
+          title="Flow is real time (Schwab); IV and OI analytics come from the delayed feed"
+        />
+      )}
       {row.sectorRelative?.regimeDetach && (
         <span
           className="text-[9px] text-caution"
@@ -228,7 +235,10 @@ function AsOfCell({ row }: { row: TickerFlow }): JSX.Element {
   return (
     <span
       className={cn('tnum', stale ? 'text-slate-600' : 'text-slate-500')}
-      title={`Option data as of ${formatTime(row.dataAsOf)} ET (${ageMin} min ago) · fetched ${formatTime(row.lastUpdated)} ET`}
+      title={
+        `Option data as of ${formatTime(row.dataAsOf)} ET (${ageMin} min ago) · fetched ${formatTime(row.lastUpdated)} ET` +
+        (row.realtime ? ' · flow real-time from Schwab; IV/OI analytics from the delayed feed' : '')
+      }
     >
       {formatTime(row.dataAsOf)}
     </span>

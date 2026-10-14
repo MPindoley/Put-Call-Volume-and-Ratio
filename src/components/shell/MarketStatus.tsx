@@ -6,13 +6,14 @@
  * the numbers. Simulated data is always called out — it must never pass for
  * the real thing.
  */
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { cn, formatTime } from '@/lib/utils';
 import { useFlowStore } from '@/store/flowStore';
 
 const SOURCE: Record<string, { label: string; title: string; warn: boolean }> = {
   simulator: { label: 'Simulated', title: 'Simulated data — not real market flow', warn: true },
-  cboe: { label: 'Delayed 15m', title: 'CBOE free feed — option chains are 15 minutes delayed', warn: false },
+  cboe: { label: 'Delayed 15m', title: 'CBOE free feed — option chains 15 minutes delayed', warn: false },
   massive: { label: 'Real-time', title: 'Massive real-time feed', warn: false },
 };
 
@@ -36,12 +37,23 @@ export function MarketStatus(): JSX.Element {
 
   const ageMs = now - status.lastPollAt;
   const freshness: 'live' | 'stale' | 'dead' = ageMs < 120_000 ? 'live' : ageMs < 300_000 ? 'stale' : 'dead';
-  const source = SOURCE[status.provider] ?? { label: status.provider, title: status.provider, warn: false };
+  const base = SOURCE[status.provider] ?? { label: status.provider, title: status.provider, warn: false };
+  // Real-time overlay (Schwab): say how many names it covers right now.
+  const rt = status.realtime;
+  const source =
+    rt && rt.state === 'polling' && rt.liveTickers > 0
+      ? {
+          label: `Real-time · ${rt.liveTickers}`,
+          title: `Schwab real-time flow for ${rt.liveTickers} names; the rest, and all IV/OI analytics, ${base.title}`,
+          warn: false,
+        }
+      : base;
 
   return (
-    <span
-      className="flex items-center gap-2 rounded-full border border-surface-border px-2.5 py-1 text-[11px] text-slate-400"
-      title={`Last poll ${formatTime(status.lastPollAt)} ET · ${source.title}`}
+    <Link
+      href="/connections"
+      className="flex items-center gap-2 rounded-full border border-surface-border px-2.5 py-1 text-[11px] text-slate-400 hover:border-slate-500"
+      title={`Last poll ${formatTime(status.lastPollAt)} ET · ${source.title} · Data sources`}
     >
       <span className="flex items-center gap-1.5">
         <span
@@ -59,7 +71,9 @@ export function MarketStatus(): JSX.Element {
       <span className="h-3 w-px bg-surface-border" aria-hidden />
       <span>{status.marketOpen ? 'Market open' : 'Market closed'}</span>
       <span className="h-3 w-px bg-surface-border" aria-hidden />
-      <span className={cn(source.warn && 'font-semibold uppercase tracking-wide text-caution')}>{source.label}</span>
-    </span>
+      <span className={cn(source.warn && 'font-semibold uppercase tracking-wide text-caution', source !== base && 'text-bullish')}>
+        {source.label}
+      </span>
+    </Link>
   );
 }
