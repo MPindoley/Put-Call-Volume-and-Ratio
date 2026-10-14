@@ -25,6 +25,8 @@ export interface ProjectionCoverage {
 
 const money = (v: number): string => `$${v >= 1000 ? v.toFixed(0) : v >= 100 ? v.toFixed(1) : v.toFixed(2)}`;
 const pct = (v: number | null, digits = 0): string => (v === null ? '—' : `${(v * 100).toFixed(digits)}%`);
+/** Odds never read as certain or impossible when they are merely tiny. */
+const odds = (v: number): string => (v > 0 && v < 0.005 ? '<1%' : v < 1 && v > 0.995 ? '>99%' : pct(v));
 const signedPct = (v: number, digits = 1): string => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(digits)}%`;
 const dateLabel = (iso: string): string =>
   new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-US', {
@@ -299,8 +301,10 @@ function Cone({ projection, spot, selected }: { projection: Projection; spot: nu
           strokeWidth={1}
         />
         <line x1={px(sel.dte)} x2={px(sel.dte)} y1={pad.t} y2={H - pad.b} className="stroke-blue-500" strokeWidth={1} />
-        {[sel.quantiles[0]!, sel.quantiles[1]!, sel.quantiles[3]!, sel.quantiles[4]!]
-          .filter((v) => Math.abs(py(v) - py(spot)) >= 10)
+        {[sel.quantiles[1]!, sel.quantiles[3]!, sel.quantiles[0]!, sel.quantiles[4]!]
+          // The 68% bounds first; drop any label within 10px of one already kept (or of the price).
+          .reduce<number[]>((kept, v) => (kept.every((k) => Math.abs(py(k) - py(v)) >= 10) ? [...kept, v] : kept), [spot])
+          .slice(1)
           .map((v, i) => (
             <text key={i} x={W - pad.r + 4} y={py(v) + 3} className="fill-slate-400 text-[9px] tnum">
               {money(v)}
@@ -368,9 +372,9 @@ function OddsTable({ e, spot, projection }: { e: ExpiryProjection; spot: number;
               >
                 <td className="py-1">{l.label}</td>
                 <td className="py-1 text-right">{money(l.v)}</td>
-                <td className="py-1 text-right">{pct(above)}</td>
-                <td className="py-1 text-right">{pct(1 - above)}</td>
-                <td className="py-1 text-right text-slate-500">{touch === null ? '' : pct(touch)}</td>
+                <td className="py-1 text-right">{odds(above)}</td>
+                <td className="py-1 text-right">{odds(1 - above)}</td>
+                <td className="py-1 text-right text-slate-500">{touch === null ? '' : odds(touch)}</td>
               </tr>
             );
           })}
