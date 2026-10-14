@@ -33,7 +33,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           # package.json requires >=18.17; 20 is the LTS the app is built against.
-          node-version: '20'
+          node-version: '22'
           cache: npm
 
       # `npm ci` installs exactly the lockfile and runs postinstall

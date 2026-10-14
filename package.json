@@ -4,7 +4,7 @@
   "private": true,
   "description": "Real-time options flow analytics dashboard: put/call ratios, volume spike detection, and unusual activity scoring across the S&P 500.",
   "engines": {
-    "node": ">=18.17"
+    "node": "22.x"
   },
   "scripts": {
     "dev": "tsx watch server.ts",
