@@ -5,8 +5,8 @@
     "buildCommand": "npm run build"
   },
   "deploy": {
-    "preDeployCommand": "npm run db:push -- --skip-generate",
-    "preDeployTimeoutSeconds": 300,
+    "preDeployCommand": "npm run db:push:deploy",
+    "preDeployTimeoutSeconds": 600,
     "startCommand": "npm start",
     "numReplicas": 1,
     "sleepApplication": false,

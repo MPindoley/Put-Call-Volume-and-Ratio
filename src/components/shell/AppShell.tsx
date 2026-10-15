@@ -118,7 +118,7 @@ function ReconnectBanner(): JSX.Element | null {
   const rt = useFlowStore((s) => s.status?.realtime ?? null);
   if (!rt || rt.state === 'signed-out' || rt.state === 'unlocked') return null;
   const left = rt.reconnectBy !== null ? rt.reconnectBy - Date.now() : null;
-  const expired = rt.state === 'expired';
+  const expired = rt.state === 'expired' || (left !== null && left <= 0);
   if (!expired && (left === null || left > 86_400_000)) return null;
   const hours = left !== null ? Math.max(0, Math.floor(left / 3_600_000)) : 0;
   return (

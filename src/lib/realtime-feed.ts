@@ -95,6 +95,8 @@ export class RealtimeFeed {
   private stopped = false;
   private startedAt = Date.now();
   private announced: RealtimeFeedInfo['state'] | null = null;
+  /** Last known end of the weekly sign-in (kept for the idle report). */
+  private reconnectBy: number | null = null;
 
   constructor(
     private engine: FlowEngine,
@@ -135,14 +137,18 @@ export class RealtimeFeed {
       this.report('unlocked', null);
       return SIGNED_OUT_RECHECK_MS;
     }
+    // Market closed: idle without touching the database, so a database that
+    // scales to zero (Neon) can sleep overnight instead of being woken every
+    // few seconds to re-read the sign-in.
+    if (this.opts.shouldIdle()) {
+      this.report('idle', this.reconnectBy);
+      return IDLE_RECHECK_MS;
+    }
     const status = await this.auth.status();
+    this.reconnectBy = status.reconnectBy;
     if (status.state !== 'connected') {
       this.report(status.state === 'expired' ? 'expired' : 'signed-out', status.reconnectBy);
       return SIGNED_OUT_RECHECK_MS;
-    }
-    if (this.opts.shouldIdle()) {
-      this.report('idle', status.reconnectBy);
-      return IDLE_RECHECK_MS;
     }
 
     const now = Date.now();
