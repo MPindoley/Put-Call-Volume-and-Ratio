@@ -104,11 +104,13 @@ export class Poller {
     this.ready = this.prepare().catch((err) => console.error('[poller] restore failed:', err));
 
     void this.loadStoredState().then(async () => {
-      await backfillCloseHistory(this.engine);
+      // The benchmarks first (they lead the universe): the regime seed needs SPY's
+      // closes; the rest of the price history fills in at the end of each maintenance pass.
+      await backfillCloseHistory(this.engine, BENCHMARKS.length);
       await backfillRegimeHistory(); // seed vol+trend regime history (gamma null) once
       await runMaintenance(this.engine);
       await this.importOldHistory();
-    });
+    }).catch((err) => console.error('[poller] startup jobs failed:', err));
     // Give the health probe a clean window before the first heavy cycle: a
     // chain fetch parses multi-MB JSON and blocks the event loop in bursts, so
     // firing it the instant the port opens can still starve the platform's

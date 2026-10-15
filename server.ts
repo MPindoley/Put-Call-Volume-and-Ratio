@@ -53,6 +53,14 @@ async function main(): Promise<void> {
   process.on('SIGTERM', shutdown);
 }
 
+// Background jobs (cron passes, the startup chain, alert writes) are fired
+// without awaiting. Node 22 ends the process on a rejection nobody handles, so
+// one unexpected error in a job would restart the server mid-session and empty
+// the in-memory table. Log it instead; each job retries on its own schedule.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandled] background task failed:', reason instanceof Error ? (reason.stack ?? reason.message) : reason);
+});
+
 main().catch((err) => {
   console.error('fatal:', err);
   process.exit(1);

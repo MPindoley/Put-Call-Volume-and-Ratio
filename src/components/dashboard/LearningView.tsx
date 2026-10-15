@@ -114,7 +114,14 @@ function StatusCard({ r }: { r: LearningReport }): JSX.Element {
     <Card>
       <CardHeader title="How much it knows" />
       <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-5">
-        <Tile label="Sessions captured" value={String(s.sessions.count)} sub={`${s.sessions.first} → ${s.sessions.last}`} />
+        <Tile
+          label="Sessions captured"
+          value={String(s.captured.count)}
+          sub={
+            (s.captured.first ? `${s.captured.first} → ${s.captured.last}` : 'first at the next close') +
+            ` · ${s.sessions.count} days of price history`
+          }
+        />
         <Tile label="Signals graded" value={s.signals.graded.toLocaleString()} sub={`of ${s.signals.logged.toLocaleString()} logged`} />
         <Tile
           label="Awaiting grades"

@@ -133,7 +133,11 @@ overnight (fixed in #15). Now (`history-jobs.ts`, `poller.ts`):
   reads the latest, so only the latest is kept, written in one insert.
 - **Close backfill continues in maintenance** (80 names a pass, each tried once
   per process), so a new, empty database has the universe's price history
-  within a few trading days instead of 80 names per restart.
+  within a few trading days instead of 80 names per restart. It runs LAST in
+  the pass, and at startup only the 4 benchmarks are fetched first (the regime
+  seed needs SPY): while the session's polling holds the rate budget, 80
+  low-priority fetches take most of an hour, and on a new database every other
+  job used to wait behind them.
 - **Connection pool of 5** unless the URL says otherwise; Prisma's default
   (2 × CPUs + 1) can exceed a free plan's cap (Aiven: 20).
 - **Raw SQL pins times to UTC** (`AT TIME ZONE 'UTC'`), so a database whose

@@ -228,24 +228,27 @@ export function selectVisibleRows(state: FlowState): TickerFlow[] {
   if (flowFilter === 'unusual') list = list.filter((r) => r.spikeScore > 70);
 
   const dir = sortDir === 'asc' ? 1 : -1;
-  const value = (r: TickerFlow): number | string => {
+  // null = the cell shows "—" (no value, or a 5-minute rate not measured yet):
+  // such rows go last in BOTH directions, never to the top of an ascending sort.
+  const windowed = (r: TickerFlow, v: number): number | null => (r.flowWindowMs === null ? null : v);
+  const value = (r: TickerFlow): number | string | null => {
     switch (sortKey) {
       case 'symbol': return r.symbol;
-      case 'conviction': return r.conviction?.direction ? r.conviction.score : 0; // + bullish first (desc)
-      case 'livePrice': return r.livePriceChangePct ?? -999; // % move, not dollar price
-      case 'marketCap': return marketCapOf(r) ?? -1; // funds (no cap) sort below every company
+      case 'conviction': return r.conviction?.direction ? r.conviction.score : 0; // + bullish first (desc); no lean sits between
+      case 'livePrice': return r.livePriceChangePct; // % move, not dollar price
+      case 'marketCap': return marketCapOf(r);
       case 'putCallRatio': return r.putCallRatio;
-      case 'putVolume': return r.putVolume;
-      case 'callVolume': return r.callVolume;
-      case 'netFlow': return r.netFlow;
-      case 'premium': return r.putPremium + r.callPremium;
+      case 'putVolume': return windowed(r, r.putVolume);
+      case 'callVolume': return windowed(r, r.callVolume);
+      case 'netFlow': return windowed(r, r.netFlow);
+      case 'premium': return windowed(r, r.putPremium + r.callPremium);
       case 'spikeScore': return r.spikeScore;
-      case 'iv30': return r.iv30 ?? -1;
-      case 'ivRank': return r.ivRank ?? -1;
-      case 'rrSkew': return r.analytics?.rrSkew25 ?? -999;
-      case 'oiPutCall': return r.analytics?.oiPutCall ?? -1;
-      case 'skewZ30': return r.sectorRelative?.skewZ30 ?? -999;
-      case 'skewZ90': return r.sectorRelative?.skewZ90 ?? -999;
+      case 'iv30': return r.iv30;
+      case 'ivRank': return r.ivRank;
+      case 'rrSkew': return r.analytics?.rrSkew25 ?? null;
+      case 'oiPutCall': return r.analytics?.oiPutCall ?? null;
+      case 'skewZ30': return r.sectorRelative?.skewZ30 ?? null;
+      case 'skewZ90': return r.sectorRelative?.skewZ90 ?? null;
       case 'lastUpdated': return r.dataAsOf; // the 'As of' column: market time of the data
     }
   };
@@ -255,6 +258,7 @@ export function selectVisibleRows(state: FlowState): TickerFlow[] {
     if (pa !== pb) return pa - pb;
     const va = value(a);
     const vb = value(b);
+    if (va === null || vb === null) return va === vb ? 0 : va === null ? 1 : -1;
     if (typeof va === 'string' && typeof vb === 'string') return va.localeCompare(vb) * dir;
     return ((va as number) - (vb as number)) * dir;
   });
