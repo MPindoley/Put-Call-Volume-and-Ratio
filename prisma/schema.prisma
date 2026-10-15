@@ -565,6 +565,14 @@ model EngineSnapshot {
   payload Bytes
 }
 
+/// A finished one-time import from an older database (db-import.ts), keyed by
+/// that database's host and name (no credentials), so it never runs twice.
+model DataImport {
+  source     String   @id
+  rows       Int
+  finishedAt DateTime @default(now())
+}
+
 /// Each name's market-implied range (projection.ts), logged once a week at the
 /// pinned end-of-day capture for two horizons (~7 and ~30 days), and graded with
 /// the settled close at expiry (projection-jobs.ts). The projection's own track

@@ -12,6 +12,7 @@ import cron from 'node-cron';
 import type { Server } from 'socket.io';
 import { CboeClient } from './cboe';
 import { getDataProvider } from './data-source';
+import { importInProgress, maybeImportOldDatabase } from './db-import';
 import { refreshEdgarConfirmations } from './event-jobs';
 import { getFlowEngine, type FlowEngine } from './flow-engine';
 import {
@@ -66,6 +67,7 @@ export class Poller {
   private maintenanceTask: cron.ScheduledTask | null = null;
   private eodTask: cron.ScheduledTask | null = null;
   private edgarTask: cron.ScheduledTask | null = null;
+  private importTask: cron.ScheduledTask | null = null;
   /** Schwab real-time overlay for the hot set (realtime-feed.ts); null when not configured. */
   private realtime: RealtimeFeed | null = null;
   /** Resolves once the saved table is restored and any catch-up is planned; cycles wait on it. */
@@ -103,6 +105,7 @@ export class Poller {
       await backfillCloseHistory(this.engine);
       await backfillRegimeHistory(); // seed vol+trend regime history (gamma null) once
       await runMaintenance(this.engine);
+      await this.importOldHistory();
     });
     // Give the health probe a clean window before the first heavy cycle: a
     // chain fetch parses multi-MB JSON and blocks the event loop in bursts, so
@@ -156,8 +159,14 @@ export class Poller {
     // while there can be new work (trading days, 9:00–21:00 ET), not overnight
     // or at weekends, when nothing they read changes.
     this.maintenanceTask = cron.schedule('11 */2 * * *', () => {
+      if (importInProgress()) return; // the import reruns maintenance when it finishes
       if (this.engine.mode === 'simulated' || maintenanceWindow()) void runMaintenance(this.engine);
     });
+    // History from an older database (IMPORT_DATABASE_URL), retried hourly until
+    // that database answers — e.g. a Neon project locked until its next month.
+    if (process.env.IMPORT_DATABASE_URL) {
+      this.importTask = cron.schedule('41 * * * *', () => void this.importOldHistory());
+    }
     // Pinned end-of-day capture: checked every 5 min; fires once in the
     // post-close ET window (self-gated on the trading calendar).
     this.eodTask = cron.schedule('*/5 * * * *', () => void maybeCaptureEndOfDay(this.engine));
@@ -231,6 +240,16 @@ export class Poller {
     this.maintenanceTask?.stop();
     this.eodTask?.stop();
     this.edgarTask?.stop();
+    this.importTask?.stop();
+  }
+
+  /** Run the one-time import if due; once it lands, reload stored state and rebuild what derives from it. */
+  private async importOldHistory(): Promise<void> {
+    if (!(await maybeImportOldDatabase())) return;
+    this.importTask?.stop();
+    this.importTask = null;
+    await this.loadStoredState();
+    await runMaintenance(this.engine);
   }
 
   private async loadStoredState(): Promise<void> {

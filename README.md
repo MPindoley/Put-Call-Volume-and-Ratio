@@ -245,7 +245,9 @@ follows automatically.
 1. New Railway project → **Deploy from GitHub repo**.
 2. Set `DATABASE_URL` to a Postgres database: a free one from Aiven
    ([`docs/DATABASE-SETUP.md`](docs/DATABASE-SETUP.md)), or Railway's own
-   **PostgreSQL** plugin (paid usage), which injects it.
+   **PostgreSQL** plugin (paid usage), which injects it. Moving from another
+   database? Set `IMPORT_DATABASE_URL` to the old one and its history is
+   copied over once it can be reached.
 3. Service variables: `DATA_PROVIDER=cboe` (or `massive` + `MASSIVE_API_KEY`),
    `NODE_ENV=production`.
 4. `railway.json` sets it up: build `npm run build` (no database needed);

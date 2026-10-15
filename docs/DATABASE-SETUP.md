@@ -70,7 +70,25 @@ The new database starts empty. On the first start the app:
 
 What cannot be rebuilt from the feed — past days' IV, skew, open interest and
 gamma, signals, projections and the edge book — lives only in the old
-database. Keep it until it has been copied over.
+database. Keep it until it has been copied over:
+
+1. In Railway → **Variables**, add `IMPORT_DATABASE_URL` = the **old**
+   database's connection string (keep `DATABASE_URL` pointing at the new one).
+2. The app tries at startup and then hourly. While the old database cannot be
+   reached — a Neon project that used its free hours is locked until the 1st
+   of the next month — it logs `[import] old database not reachable yet` once
+   and keeps waiting. When it answers, the copy runs (a few minutes) and logs
+   `[import] done: N rows added`.
+3. Remove `IMPORT_DATABASE_URL` afterwards (the app also records the import
+   and never repeats it for that database).
+
+How the two are merged (`src/lib/db-import.ts`): where both hold the same
+fact, the new database's row stays — except that the old database's captured
+daily rows replace close-only backfills, and its captured market-regime rows
+replace backfilled ones without gamma. Edge books built on the new database
+from a few days of history are dropped and rebuilt from the merged history.
+The saved scanner table and the volume baselines are not copied (the new
+ones are current; baselines rebuild from the copied snapshots).
 
 ## Verify
 

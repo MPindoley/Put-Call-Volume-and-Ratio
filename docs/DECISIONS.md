@@ -142,6 +142,21 @@ overnight (fixed in #15). Now (`history-jobs.ts`, `poller.ts`):
 reversed:** a metered free plan runs out mid-month, and a capped one fills with
 duplicate baselines.
 
+### 0.8b Moving databases: a one-time, in-app import
+The move to Aiven happened while Neon had locked the old project until the next
+month, so the history could not be copied first. `IMPORT_DATABASE_URL`
+(`db-import.ts`) copies it later, from inside the app, so no database password
+leaves the host: tried at startup and hourly until the old database answers,
+then recorded in `DataImport` and never repeated. Merge rule: the current row
+wins on its natural key, except over a weaker stand-in for the same fact (a
+close-only backfill, a backfilled regime row without gamma); edge books built
+on the new database are derived from a few days of history, so they are
+replaced and the recent ones rebuilt from the merged evidence
+(`reconstructed: true`). Copying is idempotent (skip-on-conflict), so an
+attempt that fails part-way is repeated whole. **If reversed:** a manual
+dump/restore would have to wait for the lock, run outside the app with both
+passwords, and resolve the overlap by hand.
+
 ### 0.9 Outbound bytes: compact price ticks, compressed frames
 Live-price sweeps push `[symbol, price, change%, time]` tuples (`quote-update`),
 not full rows; socket frames over 1 KB are deflated; the full table is sent once
