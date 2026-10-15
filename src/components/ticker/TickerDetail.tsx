@@ -15,6 +15,7 @@ import { ConvictionCell, QUOTE_STALE_MS } from '@/components/ui/conviction';
 import { Sparkline } from '@/components/dashboard/Sparkline';
 import { Term } from '@/components/ui/term';
 import type { GlossaryKey } from '@/lib/glossary';
+import { formatMarketCap, marketCapOf } from '@/lib/market-cap';
 import type { Projection } from '@/lib/projection';
 import type { CalibrationView, HorizonKey } from '@/lib/projection-history';
 import { ProjectionCard, type ProjectionCoverage } from './ProjectionCard';
@@ -263,6 +264,11 @@ function TickerHeader({ symbol, flow, sections }: { symbol: string; flow: Ticker
               <HeaderStat label="Unusual" term="unusual" title={`Volume ${flow.volumeVsExpected.toFixed(1)}× expected`}>
                 <SpikeBadge level={flow.spikeLevel} />
                 <span className="tnum text-slate-300">{flow.spikeScore}</span>
+              </HeaderStat>
+              <HeaderStat label="Mkt cap" term="marketCap">
+                <span className={cn('tnum', marketCapOf(flow) === null ? 'text-slate-600' : 'text-slate-200')}>
+                  {formatMarketCap(marketCapOf(flow))}
+                </span>
               </HeaderStat>
               <HeaderStat label="IV30 · rank" term="ivRank">
                 <span className="tnum text-slate-200">{flow.iv30 !== null ? flow.iv30.toFixed(1) : '—'}</span>

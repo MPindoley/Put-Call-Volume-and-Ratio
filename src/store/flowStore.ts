@@ -21,10 +21,12 @@ import type {
   SpikeAlert,
   TickerFlow,
 } from '@/types';
+import { marketCapOf } from '@/lib/market-cap';
 
 export type SortKey =
   | 'symbol'
   | 'livePrice'
+  | 'marketCap'
   | 'conviction'
   | 'putCallRatio'
   | 'putVolume'
@@ -231,6 +233,7 @@ export function selectVisibleRows(state: FlowState): TickerFlow[] {
       case 'symbol': return r.symbol;
       case 'conviction': return r.conviction?.direction ? r.conviction.score : 0; // + bullish first (desc)
       case 'livePrice': return r.livePriceChangePct ?? -999; // % move, not dollar price
+      case 'marketCap': return marketCapOf(r) ?? -1; // funds (no cap) sort below every company
       case 'putCallRatio': return r.putCallRatio;
       case 'putVolume': return r.putVolume;
       case 'callVolume': return r.callVolume;

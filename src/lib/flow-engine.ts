@@ -125,6 +125,8 @@ export class FlowEngine {
   readonly idiosyncraticMoves = new Map<string, IdiosyncraticMove[]>();
   /** Per-ticker learned conviction from the latest edge book (learning-jobs.ts). */
   readonly convictions = new Map<string, TickerConviction>();
+  /** Shares outstanding by symbol (market-cap.ts), stamped onto rows as they arrive. */
+  readonly shares = new Map<string, number>();
   /**
    * Per-ticker market-implied projection from the latest chain (projection.ts).
    * Served to the ticker page only — never broadcast with the table rows.
@@ -226,6 +228,7 @@ export class FlowEngine {
       oiSignals,
       sectorRelative: this.sectorRelatives.get(agg.symbol) ?? null,
       conviction: this.convictions.get(agg.symbol) ?? null,
+      sharesOutstanding: this.shares.get(agg.symbol) ?? null,
       eventGauge,
       idiosyncraticMoves: this.idiosyncraticMoves.get(agg.symbol) ?? [],
       lastUpdated: now,
@@ -445,6 +448,25 @@ export class FlowEngine {
     return touched;
   }
 
+  /**
+   * Replace shares outstanding and stamp them onto existing rows; returns the
+   * rows whose figure changed (by more than rounding — the screener's cap and
+   * price are rounded, so the derived count wobbles slightly day to day).
+   */
+  setShares(next: ReadonlyMap<string, number>): TickerFlow[] {
+    this.shares.clear();
+    for (const [symbol, n] of next) this.shares.set(symbol, n);
+    const touched: TickerFlow[] = [];
+    for (const [symbol, state] of this.tickers) {
+      const n = this.shares.get(symbol) ?? null;
+      const old = state.flow.sharesOutstanding ?? null;
+      if (n === old || (n !== null && old !== null && Math.abs(n / old - 1) < 0.005)) continue;
+      state.flow.sharesOutstanding = n;
+      touched.push(state.flow);
+    }
+    return touched;
+  }
+
   applyQuotes(quotes: { symbol: string; price: number; changePct: number | null; at: number }[]): TickerFlow[] {
     const touched: TickerFlow[] = [];
     for (const q of quotes) {
@@ -537,6 +559,10 @@ export class FlowEngine {
       // The real-time overlay is not live in this process (yet).
       st.flow = { ...st.flow, ...flow, realtime: false };
       this.tickers.set(flow.symbol, st);
+      // Saved before shares existed, the field is absent: null, not undefined.
+      st.flow.sharesOutstanding = flow.sharesOutstanding ?? null;
+      // Until the screener answers, the saved shares stand (rows fetched later get them too).
+      if (st.flow.sharesOutstanding && !this.shares.has(flow.symbol)) this.shares.set(flow.symbol, st.flow.sharesOutstanding);
       restored += 1;
     }
     for (const p of s.projections) if (!this.projections.has(p.symbol)) this.projections.set(p.symbol, p);
@@ -605,6 +631,7 @@ export class FlowEngine {
         livePrice: null,
         livePriceChangePct: null,
         livePriceAt: null,
+        sharesOutstanding: null,
         iv30: null,
         iv30Change: null,
         ivRank: null,
