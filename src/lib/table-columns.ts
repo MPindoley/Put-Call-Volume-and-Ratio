@@ -2,7 +2,7 @@
  * Scan-table column model: which columns exist, how wide they are, and which
  * to drop first when the table is narrower than all of them together.
  *
- * Why this exists: the full 17-column table needs ~1,356px. On a 1440px laptop
+ * Why this exists: the full 18-column table needs ~1,428px. On a 1440px laptop
  * with the side panel open the table gets ~1,060px, and the old layout either
  * scrolled sideways or — worse — pushed the side panel off the screen. Instead
  * the table now drops its least important columns, in a fixed order, until it
@@ -15,6 +15,7 @@
 export type ColumnId =
   | 'symbol'
   | 'livePrice'
+  | 'marketCap'
   | 'conviction'
   | 'putCallRatio'
   | 'putVolume'
@@ -49,6 +50,7 @@ export interface ColumnDef {
 export const COLUMN_DEFS: readonly ColumnDef[] = [
   { id: 'symbol', label: 'Ticker', width: 96, dropRank: 0, hideable: false },
   { id: 'livePrice', label: 'Last', width: 80, dropRank: 0, hideable: true },
+  { id: 'marketCap', label: 'Mkt Cap', width: 64, dropRank: 3, hideable: true },
   { id: 'conviction', label: 'Conv', width: 64, dropRank: 0, hideable: true },
   { id: 'putCallRatio', label: 'P/C', width: 56, dropRank: 0, hideable: true },
   { id: 'putVolume', label: 'Puts 5m', width: 64, dropRank: 6, hideable: true },

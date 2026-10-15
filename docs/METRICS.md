@@ -16,6 +16,22 @@ hardcoded in the math.
 
 ---
 
+## Market cap
+
+**What:** the company's value at the current price: shares outstanding × price.
+**How:** shares outstanding = market cap ÷ last sale from Nasdaq's stock
+screener (all ~7,000 US-listed stocks in one download, refreshed at startup and
+each weekday morning); the shown cap is that × the live price (else the chain's
+price), so it moves with the quote (`src/lib/market-cap.ts`). Sorts in the
+scanner's **Mkt Cap** column; also in the ticker page header.
+**Read:** mega ≥ $200B · large $10–200B · mid $2–10B · small $300M–2B.
+**Lies:** ETFs/funds show "—" (their size is AUM, not a cap), as do the few
+stocks the list omits or carries at zero (9 of ~1,340 when measured). For
+multi-class companies (GOOGL/GOOG) it is the whole company. Display only — the
+sector analytics' cap weighting reads `MarketCapConfig`, which this does not fill.
+
+---
+
 ## Core chain metrics (v5, per poll cycle)
 
 ### IV30 — 30-day implied volatility

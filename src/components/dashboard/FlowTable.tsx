@@ -6,7 +6,7 @@
  * TickerFlow object identity changes. Sortable columns, sector/flow filters,
  * the global ticker search (top bar), pin-to-top, and flash-on-significant-flow.
  *
- * Columns fit the space: when the table is narrower than all 17 columns it
+ * Columns fit the space: when the table is narrower than all 18 columns it
  * drops the least important ones in a fixed order (src/lib/table-columns.ts)
  * instead of scrolling sideways, and the Columns menu lets you hide any of
  * them yourself (remembered per browser).
@@ -20,6 +20,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { usePersistentState } from '@/hooks/usePersistentState';
 import { COLUMN_DEFS, fitColumns, rowWidth, type ColumnId } from '@/lib/table-columns';
 import { GLOSSARY, type GlossaryEntry, type GlossaryKey } from '@/lib/glossary';
+import { formatMarketCap, marketCapOf } from '@/lib/market-cap';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
 import { SECTORS } from '@/lib/universe';
 import { selectVisibleRows, useFlowStore, type FlowFilter, type SortKey } from '@/store/flowStore';
@@ -33,6 +34,11 @@ const COLUMN_META: Record<ColumnId, { sort: SortKey | null; align: 'left' | 'rig
     sort: 'livePrice',
     align: 'right',
     title: 'Live last-trade price and % change. Independent of the 15-minute delayed option chain — dimmed when the quote is stale, "—" when there is none',
+  },
+  marketCap: {
+    sort: 'marketCap',
+    align: 'right',
+    title: 'Market capitalization at the current price. "—" for ETFs and funds (and the few names Nasdaq does not list)',
   },
   conviction: {
     sort: 'conviction',
@@ -76,6 +82,7 @@ const DEF_BY_ID = new Map(COLUMN_DEFS.map((c) => [c.id, c]));
 
 /** The glossary entry behind each column, so header tooltips match the ticker page's definitions. */
 const COLUMN_TERM: Partial<Record<ColumnId, GlossaryKey>> = {
+  marketCap: 'marketCap',
   conviction: 'conviction',
   putCallRatio: 'putCallRatio',
   putVolume: 'putsCalls5m',
@@ -272,6 +279,18 @@ function AsOfCell({ row }: { row: TickerFlow }): JSX.Element {
   );
 }
 
+function MarketCapCell({ row }: { row: TickerFlow }): JSX.Element {
+  const cap = marketCapOf(row);
+  return (
+    <span
+      className={cn('tnum', cap === null ? 'text-slate-600' : 'text-slate-300')}
+      title={cap === null ? "No market cap: an ETF or fund, or not in Nasdaq's stock list" : undefined}
+    >
+      {formatMarketCap(cap)}
+    </span>
+  );
+}
+
 /** The 5-minute columns before a rate exists: absence, styled as absence (§4) — never a misleading 0. */
 function NotMeasured({ row }: { row: TickerFlow }): JSX.Element {
   return (
@@ -290,6 +309,8 @@ function CellContent({ id, row, pinned }: { id: ColumnId; row: TickerFlow; pinne
       return <TickerCell row={row} pinned={pinned} />;
     case 'livePrice':
       return <PriceCell row={row} />;
+    case 'marketCap':
+      return <MarketCapCell row={row} />;
     case 'conviction':
       return <ConvictionCell row={row} />;
     case 'putCallRatio':

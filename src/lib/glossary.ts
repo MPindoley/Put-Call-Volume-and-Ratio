@@ -77,6 +77,13 @@ export const GLOSSARY = {
     term: 'Live price',
     what: 'The latest traded stock price from the quote sweep (or the real-time chain).',
   },
+  marketCap: {
+    term: 'Market cap',
+    what: "The stock market's value of the whole company: shares outstanding × share price.",
+    how: "Shares outstanding from Nasdaq's stock list (refreshed each weekday morning) × the live price, so it moves with the quote.",
+    read: 'Mega cap ≥ $200B · large $10–200B · mid $2–10B · small $300M–2B. Bigger companies usually move less on the same news and their options trade more.',
+    caveat: 'ETFs and other funds show "—": their size is assets under management, not a market cap. So do the few names missing from Nasdaq\'s list. For companies with several share classes (e.g. GOOGL/GOOG) it is the whole company\'s value.',
+  },
 
   // ── Volatility & positioning ──
   iv30: {

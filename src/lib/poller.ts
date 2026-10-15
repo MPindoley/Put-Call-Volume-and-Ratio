@@ -13,6 +13,7 @@ import type { Server } from 'socket.io';
 import { CboeClient } from './cboe';
 import { getDataProvider } from './data-source';
 import { importInProgress, maybeImportOldDatabase } from './db-import';
+import { fetchSharesOutstanding } from './market-cap';
 import { refreshEdgarConfirmations } from './event-jobs';
 import { getFlowEngine, type FlowEngine } from './flow-engine';
 import {
@@ -68,6 +69,7 @@ export class Poller {
   private eodTask: cron.ScheduledTask | null = null;
   private edgarTask: cron.ScheduledTask | null = null;
   private importTask: cron.ScheduledTask | null = null;
+  private marketCapTask: cron.ScheduledTask | null = null;
   /** Schwab real-time overlay for the hot set (realtime-feed.ts); null when not configured. */
   private realtime: RealtimeFeed | null = null;
   /** Resolves once the saved table is restored and any catch-up is planned; cycles wait on it. */
@@ -162,6 +164,12 @@ export class Poller {
       if (importInProgress()) return; // the import reruns maintenance when it finishes
       if (this.engine.mode === 'simulated' || maintenanceWindow()) void runMaintenance(this.engine);
     });
+    // Market caps (shares outstanding from Nasdaq's screener): once shortly after
+    // start, then each weekday morning before the open. MARKET_CAP_SOURCE=off disables.
+    if (process.env.MARKET_CAP_SOURCE !== 'off') {
+      setTimeout(() => void this.refreshMarketCaps(), warmupMs + 6_000).unref();
+      this.marketCapTask = cron.schedule('7 12 * * 1-5', () => void this.refreshMarketCaps());
+    }
     // History from an older database (IMPORT_DATABASE_URL), retried hourly until
     // that database answers — e.g. a Neon project locked until its next month.
     if (process.env.IMPORT_DATABASE_URL) {
@@ -241,6 +249,17 @@ export class Poller {
     this.eodTask?.stop();
     this.edgarTask?.stop();
     this.importTask?.stop();
+    this.marketCapTask?.stop();
+  }
+
+  /** Download shares outstanding and push the rows whose market cap changed. */
+  private async refreshMarketCaps(): Promise<void> {
+    const shares = await fetchSharesOutstanding();
+    if (!shares) return; // keep what is known
+    const touched = this.engine.setShares(shares);
+    const covered = TRACKED_UNIVERSE.filter((u) => shares.has(u.symbol)).length;
+    console.log(`[market-cap] shares outstanding for ${covered}/${TRACKED_UNIVERSE.length} names (the rest: ETFs/funds, and names Nasdaq does not list)`);
+    if (this.io && touched.length > 0) this.io.emit('flow-update', touched);
   }
 
   /** Run the one-time import if due; once it lands, reload stored state and rebuild what derives from it. */

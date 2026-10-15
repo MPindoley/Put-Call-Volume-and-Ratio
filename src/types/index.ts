@@ -196,6 +196,11 @@ export interface TickerFlow {
   livePrice: number | null;
   livePriceChangePct: number | null;
   livePriceAt: number | null;
+  /**
+   * Shares outstanding (Nasdaq screener, market-cap.ts); market cap is this ×
+   * the current price (marketCapOf). Null for ETFs/funds and names not listed.
+   */
+  sharesOutstanding: number | null;
   /** 30-day implied volatility (vol points, e.g. 27.1) and day change. */
   iv30: number | null;
   iv30Change: number | null;

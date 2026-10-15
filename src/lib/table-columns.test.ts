@@ -11,8 +11,8 @@ describe('fitColumns', () => {
     expect(fit.droppedForSpace).toEqual([]);
   });
 
-  it('matches the old fixed table width (17 columns ≈ 1,356px)', () => {
-    expect(rowWidth(ALL)).toBe(1356);
+  it('needs ~1,428px for all 18 columns (the old 17 were 1,356px; Mkt Cap adds 64 + a gap)', () => {
+    expect(rowWidth(ALL)).toBe(1428);
   });
 
   it('drops the least important columns first, one group at a time', () => {

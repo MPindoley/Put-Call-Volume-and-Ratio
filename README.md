@@ -13,7 +13,8 @@ IWM = Russell 2000) pinned in a dedicated strip.
 
 - **Live flow table** — P/C ratio, rolling 5-min put/call volume, net flow,
   premium spent, spike badge, 0–100 unusual-activity score, 30-min ratio
-  sparkline. Sortable, sector-filterable, ticker search, pin-to-top, bullish /
+  sparkline, market cap (shares outstanding from Nasdaq's stock list × the
+  live price). Sortable, sector-filterable, ticker search, pin-to-top, bullish /
   bearish / unusual smart filters, row flash on significant flow, virtualized
   for 500 rows.
 - **Aggregate P/C dashboard** — S&P 500 hero ratio with trend arrow, sector
