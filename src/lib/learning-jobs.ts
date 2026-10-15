@@ -14,6 +14,7 @@
 import { Prisma } from '@prisma/client';
 import { getAnalyticsConfig } from './analytics-config';
 import { tryDb } from './db';
+import { finalizedMetricWhere } from './finalized-reads';
 import type { FlowEngine } from './flow-engine';
 import { establishedCounts, type Calibration, type Level } from './learning';
 import {
@@ -113,7 +114,10 @@ export interface LearningReport {
   version: string;
   generatedAt: string;
   status: {
+    /** The trading-session clock: every day with an SPY close, including close-only backfill. */
     sessions: { first: string; last: string; count: number };
+    /** Sessions the app actually captured (options data pinned at the close), not backfilled prices. */
+    captured: { first: string | null; last: string | null; count: number };
     books: { total: number; live: number; reconstructed: number; latestAsOf: string | null };
     signals: {
       /** Single-name directional signals under the current definitions. */
@@ -169,9 +173,14 @@ export async function getLearningReport(): Promise<LearningReport | null> {
         }
       }
     }
-    const [total, live] = await Promise.all([
+    const [total, live, capturedDays] = await Promise.all([
       db.edgeBook.count({ where: { version } }),
       db.edgeBook.count({ where: { version, reconstructed: false } }),
+      db.dailyMetric.groupBy({
+        by: ['date'],
+        where: finalizedMetricWhere({ historicalCloseOnly: false }),
+        orderBy: { date: 'asc' },
+      }),
     ]);
 
     const report: LearningReport = {
@@ -179,6 +188,11 @@ export async function getLearningReport(): Promise<LearningReport | null> {
       generatedAt: new Date().toISOString(),
       status: {
         sessions: { first: sessions[0] ?? '', last: sessions[lastIdx] ?? '', count: sessions.length },
+        captured: {
+          first: capturedDays[0]?.date.toISOString().slice(0, 10) ?? null,
+          last: capturedDays[capturedDays.length - 1]?.date.toISOString().slice(0, 10) ?? null,
+          count: capturedDays.length,
+        },
         books: { total, live, reconstructed: total - live, latestAsOf: latest ? latest.asOf.toISOString().slice(0, 10) : null },
         signals: {
           logged,

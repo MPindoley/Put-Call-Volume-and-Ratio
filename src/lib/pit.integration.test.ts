@@ -404,6 +404,11 @@ describe.skipIf(!RUN)('PIT integration (RUN_DB_TESTS=1)', () => {
 
     const r = (await getLearningReport())!;
     expect(r.status.sessions.count).toBe(N);
+    expect(r.status.captured).toEqual({
+      count: N,
+      first: days[0]!.toISOString().slice(0, 10),
+      last: days[N - 1]!.toISOString().slice(0, 10),
+    });
     expect(r.status.books.total).toBe(50);
     expect(r.status.signals.graded).toBe(80); // AAPL + MSFT only
     expect(r.status.signals.pending).toBe(2); // tonight's

@@ -572,7 +572,6 @@ export async function runMaintenance(engine: FlowEngine): Promise<void> {
   if (maintaining) return; // a slow pass (e.g. filling a new database) never overlaps the next
   maintaining = true;
   try {
-    await backfillCloseHistory(engine);
     const key = await dailyInputsKey();
     const daily = key === null || key !== lastDailyKey;
     const baselines = daily ? await computeBaselines(engine) : 0;
@@ -599,6 +598,11 @@ export async function runMaintenance(engine: FlowEngine): Promise<void> {
     await refreshProjectionHistory(engine);
     if (daily) await pruneHistory();
     if (key !== null) lastDailyKey = key;
+    // Last: on a new database this fetches price history for 80 names at low
+    // priority, which takes most of an hour while the session's polling holds
+    // the rate budget — the jobs above must not wait behind it. The rows it
+    // adds change dailyInputsKey, so the next pass re-reads them.
+    await backfillCloseHistory(engine);
     if (baselines > 0 || scored > 0 || idio > 0 || realized > 0) {
       console.log(
         `[maintenance] baselines refreshed for ${baselines} tickers, ${scored} alerts scored, ` +
