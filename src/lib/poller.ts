@@ -16,10 +16,12 @@ import { refreshEdgarConfirmations } from './event-jobs';
 import { getFlowEngine, type FlowEngine } from './flow-engine';
 import {
   backfillCloseHistory,
+  maintenanceWindow,
   maybeCaptureEndOfDay,
   persistAlert,
   runMaintenance,
   seedTickers,
+  upsertFlowSnapshots,
 } from './history-jobs';
 import { loadInstrumentConfigs } from './interpretation';
 import { backfillRegimeHistory } from './regime-jobs';
@@ -150,8 +152,12 @@ export class Poller {
       setTimeout(() => void this.quoteCycle(), warmupMs + 2_000).unref();
       this.quoteTask = cron.schedule(`*/${quoteSec} * * * * *`, () => void this.quoteCycle());
     }
-    // Baselines, alert scoring, provisional metrics and retention: every 2 hours.
-    this.maintenanceTask = cron.schedule('11 */2 * * *', () => void runMaintenance(this.engine));
+    // Baselines, alert scoring, provisional metrics and retention: every 2 hours
+    // while there can be new work (trading days, 9:00–21:00 ET), not overnight
+    // or at weekends, when nothing they read changes.
+    this.maintenanceTask = cron.schedule('11 */2 * * *', () => {
+      if (this.engine.mode === 'simulated' || maintenanceWindow()) void runMaintenance(this.engine);
+    });
     // Pinned end-of-day capture: checked every 5 min; fires once in the
     // post-close ET window (self-gated on the trading calendar).
     this.eodTask = cron.schedule('*/5 * * * *', () => void maybeCaptureEndOfDay(this.engine));
@@ -523,30 +529,19 @@ export class Poller {
     const toBucket = (ms: number): Date => new Date(Math.floor(ms / 300_000) * 300_000);
     const bucketStart = toBucket(bucketMs);
     await tryDb('persist snapshots', async (db) => {
-      await db.$transaction(
-        updated.slice(0, 500).map((f) => {
-          const rowBucket = f.dataAsOf > 0 ? toBucket(f.dataAsOf) : bucketStart;
-          return db.flowSnapshot.upsert({
-            where: { symbol_bucketStart: { symbol: f.symbol, bucketStart: rowBucket } },
-            create: {
-              symbol: f.symbol,
-              bucketStart: rowBucket,
-              putVolume: f.sessionPutVolume,
-              callVolume: f.sessionCallVolume,
-              putPremium: f.putPremium,
-              callPremium: f.callPremium,
-              putCallRatio: f.putCallRatio,
-              spikeScore: f.spikeScore,
-              underlying: f.underlyingPrice || null,
-            },
-            update: {
-              putVolume: f.sessionPutVolume,
-              callVolume: f.sessionCallVolume,
-              putCallRatio: f.putCallRatio,
-              spikeScore: f.spikeScore,
-            },
-          });
-        }),
+      await upsertFlowSnapshots(
+        db,
+        updated.slice(0, 500).map((f) => ({
+          symbol: f.symbol,
+          bucketStart: f.dataAsOf > 0 ? toBucket(f.dataAsOf) : bucketStart,
+          putVolume: f.sessionPutVolume,
+          callVolume: f.sessionCallVolume,
+          putPremium: f.putPremium,
+          callPremium: f.callPremium,
+          putCallRatio: f.putCallRatio,
+          spikeScore: f.spikeScore,
+          underlying: f.underlyingPrice || null,
+        })),
       );
       const agg = this.engine.getAggregate();
       if (agg) {

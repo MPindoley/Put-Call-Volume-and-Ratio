@@ -110,6 +110,38 @@ horizon as DailyMetric. **Reasoning:** at ~1,400 names untrimmed snapshots alone
 reach ~140 MB and RelativeMetric grows ~140 MB a year. **If reversed:** the free
 database fills within about a year.
 
+### 0.8a Database work only when there is new data
+Neon's free plan meters compute hours (100 a month), and the app used them up
+by mid-October: a maintenance pass every 2 hours, around the clock, each
+re-reading whole tables (a year of daily rows for IV rank, every close for
+event detection, the full learning history for the edge book) whether or not
+anything had changed, plus the Schwab loop reading its sign-in every minute
+overnight (fixed in #15). Now (`history-jobs.ts`, `poller.ts`):
+- **Maintenance runs on trading days, 9:00–21:00 ET** (`maintenanceWindow`),
+  plus once at startup. Overnight and at weekends nothing it reads changes.
+- **Whole-table jobs run when their inputs change.** Baselines, event
+  detection, signal and projection grading, the edge book and retention run
+  only when `dailyInputsKey` (ET date + latest finalized date + finalized row
+  count) differs from the last pass that ran them: the first pass of the day
+  and the one after the end-of-day capture. IV rank still follows live IV every
+  pass, against a cached copy of the stored history keyed the same way.
+- **One statement per cycle for snapshots.** A cycle's intraday snapshots are
+  one `INSERT … ON CONFLICT` (`upsertFlowSnapshots`) instead of up to 500
+  Prisma upserts (a read and a write each) every 30 seconds.
+- **One baseline row per symbol.** Baselines were inserted for every name on
+  every pass and kept 45 days (~750k rows, the largest table); the loader only
+  reads the latest, so only the latest is kept, written in one insert.
+- **Close backfill continues in maintenance** (80 names a pass, each tried once
+  per process), so a new, empty database has the universe's price history
+  within a few trading days instead of 80 names per restart.
+- **Connection pool of 5** unless the URL says otherwise; Prisma's default
+  (2 × CPUs + 1) can exceed a free plan's cap (Aiven: 20).
+- **Raw SQL pins times to UTC** (`AT TIME ZONE 'UTC'`), so a database whose
+  session time zone is not UTC stores and compares the same instants.
+**Reasoning:** the app should run on a free database indefinitely. **If
+reversed:** a metered free plan runs out mid-month, and a capped one fills with
+duplicate baselines.
+
 ### 0.9 Outbound bytes: compact price ticks, compressed frames
 Live-price sweeps push `[symbol, price, change%, time]` tuples (`quote-update`),
 not full rows; socket frames over 1 KB are deflated; the full table is sent once

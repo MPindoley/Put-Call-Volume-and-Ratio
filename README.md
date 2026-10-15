@@ -206,7 +206,10 @@ Formulas: [`docs/METRICS.md`](docs/METRICS.md#projection-history-check-and-relat
 ## Intelligence jobs (require a database)
 
 With `DATABASE_URL` set (see [docs/DATABASE-SETUP.md](docs/DATABASE-SETUP.md)),
-a maintenance job runs at startup and every 2 hours:
+a maintenance job runs at startup and every 2 hours on trading days from 9:00
+to 21:00 ET (not overnight or at weekends, when nothing it reads changes). The
+jobs that re-read whole tables run only when finalized data has changed —
+about twice a trading day — so the app fits a free database:
 
 - **Baselines** — rolls stored 5-min snapshots into per-ticker 20-day average
   daily volume + stddev, feeding the spike detector real expectations.
@@ -240,7 +243,9 @@ follows automatically.
 ## Deployment (Railway, single service)
 
 1. New Railway project → **Deploy from GitHub repo**.
-2. Add a **PostgreSQL** plugin; Railway injects `DATABASE_URL`.
+2. Set `DATABASE_URL` to a Postgres database: a free one from Aiven
+   ([`docs/DATABASE-SETUP.md`](docs/DATABASE-SETUP.md)), or Railway's own
+   **PostgreSQL** plugin (paid usage), which injects it.
 3. Service variables: `DATA_PROVIDER=cboe` (or `massive` + `MASSIVE_API_KEY`),
    `NODE_ENV=production`.
 4. `railway.json` sets it up: build `npm run build` (no database needed);
@@ -250,7 +255,8 @@ follows automatically.
    couple of minutes, because a database that scales to zero (Neon's free
    tier) can take longer than Prisma's default 5 s to wake — the cause of
    "P1001: Can't reach database server" on an after-hours deploy. The app's
-   own connections get the same 30 s (`src/lib/db.ts`).
+   own connections get the same 30 s and a pool of 5 (`src/lib/db.ts`), well
+   inside a free plan's connection cap.
 5. Railway assigns `PORT` automatically; the server reads it.
 6. Optional: `SITE_PASSWORD` to lock the site, then the Schwab variables for
    real-time flow ([`docs/SCHWAB-SETUP.md`](docs/SCHWAB-SETUP.md)).
