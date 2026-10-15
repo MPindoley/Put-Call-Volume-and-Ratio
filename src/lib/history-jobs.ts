@@ -12,8 +12,10 @@
  *  scoreAlerts      — fill Alert.moveNextDay: underlying % move ~1 trading
  *                     day after each alert. Powers the accuracy scoreboard.
  *  pruneHistory     — retention: snapshots 35d, ratio points 90d, alerts 120d.
+ *  runMaintenance   — the pass that runs them: intraday jobs every pass, the
+ *                     whole-table daily jobs only when their inputs changed.
  */
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import type { SpikeAlert, TickerFlow } from '@/types';
 import { getAnalyticsConfig } from './analytics-config';
 import { historicalVol, ivRank } from './chain-analytics';
@@ -30,7 +32,7 @@ import type { FlowEngine } from './flow-engine';
 import { finalizeDailyCapture, loadLatestIntoEngine } from './sector-analytics';
 import { NOT_SEEDED } from './seed-guard';
 import { DEFAULT_INTRADAY_SHAPE } from './spike-detector';
-import { etDateKey, inCaptureWindow, isTradingDayNow, pastCaptureStart } from './trading-calendar';
+import { etDateKey, etTimeParts, inCaptureWindow, isTradingDayNow, pastCaptureStart } from './trading-calendar';
 import { TRACKED_UNIVERSE } from './universe';
 
 const DAY_MS = 86_400_000;
@@ -79,7 +81,7 @@ export async function computeBaselines(engine: FlowEngine): Promise<number> {
              date_trunc('day', "bucketStart") AS day,
              MAX("putVolume" + "callVolume") AS volume
       FROM "FlowSnapshot"
-      WHERE "bucketStart" >= ${since} AND "bucketStart" < ${todayStart}
+      WHERE "bucketStart" >= ${since} AT TIME ZONE 'UTC' AND "bucketStart" < ${todayStart} AT TIME ZONE 'UTC'
       GROUP BY 1, 2
     `;
 
@@ -90,7 +92,7 @@ export async function computeBaselines(engine: FlowEngine): Promise<number> {
       bySymbol.set(row.symbol, vols);
     }
 
-    let count = 0;
+    const computed: Prisma.VolumeBaselineCreateManyInput[] = [];
     for (const [symbol, vols] of bySymbol) {
       const days = vols.slice(-20);
       if (days.length < 3) continue; // not enough history to be meaningful
@@ -103,20 +105,22 @@ export async function computeBaselines(engine: FlowEngine): Promise<number> {
         sampleDays: days.length,
       };
       engine.detector.setBaseline(symbol, baseline);
-      await db.volumeBaseline.create({
-        data: {
-          symbol,
-          avgVolume: avg,
-          stdDevVolume: baseline.stdDevVolume,
-          intradayShape: [...DEFAULT_INTRADAY_SHAPE],
-          sampleDays: days.length,
-        },
+      computed.push({
+        symbol,
+        avgVolume: avg,
+        stdDevVolume: baseline.stdDevVolume,
+        intradayShape: [...DEFAULT_INTRADAY_SHAPE],
+        sampleDays: days.length,
       });
-      count += 1;
     }
-    // Keep only recent baseline rows; the loader takes the latest per symbol.
-    await db.volumeBaseline.deleteMany({ where: { computedAt: { lt: new Date(Date.now() - 45 * DAY_MS) } } });
-    return count;
+    if (computed.length > 0) await db.volumeBaseline.createMany({ data: computed });
+    // The loader reads only the latest row per symbol: drop the rest.
+    await db.$executeRaw`
+      DELETE FROM "VolumeBaseline" v
+      USING (SELECT "symbol", MAX("computedAt") AS latest FROM "VolumeBaseline" GROUP BY 1) k
+      WHERE v."symbol" = k."symbol" AND v."computedAt" < k.latest
+    `;
+    return computed.length;
   });
   return updated ?? 0;
 }
@@ -178,13 +182,58 @@ export async function downsampleSnapshots(db: PrismaClient, cutoff: Date): Promi
     USING (
       SELECT "symbol", date_trunc('day', "bucketStart") AS day, MAX("bucketStart") AS keep
       FROM "FlowSnapshot"
-      WHERE "bucketStart" < ${cutoff}
+      WHERE "bucketStart" < ${cutoff} AT TIME ZONE 'UTC'
       GROUP BY 1, 2
     ) k
     WHERE f."symbol" = k."symbol"
       AND date_trunc('day', f."bucketStart") = k.day
       AND f."bucketStart" < k.keep
-      AND f."bucketStart" < ${cutoff}
+      AND f."bucketStart" < ${cutoff} AT TIME ZONE 'UTC'
+  `;
+}
+
+export interface SnapshotRow {
+  symbol: string;
+  bucketStart: Date;
+  putVolume: number;
+  callVolume: number;
+  putPremium: number;
+  callPremium: number;
+  putCallRatio: number;
+  spikeScore: number;
+  underlying: number | null;
+}
+
+/**
+ * Write a cycle's intraday snapshots in ONE statement, in place of a per-row
+ * upsert (a read and a write each, up to 500 per cycle). A row already in its
+ * 5-minute bucket takes the latest volumes, ratio and spike score and keeps its
+ * first premiums and underlying, as the per-row upserts did. Times are stored
+ * as UTC whatever the session's time zone.
+ */
+export async function upsertFlowSnapshots(db: Pick<PrismaClient, '$executeRaw'>, rows: readonly SnapshotRow[]): Promise<number> {
+  // ON CONFLICT cannot touch one row twice in a statement: the last per bucket wins.
+  const byKey = new Map<string, SnapshotRow>();
+  for (const r of rows) byKey.set(`${r.symbol}|${r.bucketStart.getTime()}`, r);
+  if (byKey.size === 0) return 0;
+  const values = [...byKey.values()].map(
+    (r) => Prisma.sql`(
+      ${r.symbol}, ${r.bucketStart} AT TIME ZONE 'UTC',
+      CAST(${r.putVolume} AS integer), CAST(${r.callVolume} AS integer),
+      CAST(${r.putPremium} AS double precision), CAST(${r.callPremium} AS double precision),
+      CAST(${r.putCallRatio} AS double precision), CAST(${r.spikeScore} AS integer),
+      CAST(${r.underlying} AS double precision)
+    )`,
+  );
+  return db.$executeRaw`
+    INSERT INTO "FlowSnapshot"
+      ("symbol", "bucketStart", "putVolume", "callVolume", "putPremium", "callPremium", "putCallRatio", "spikeScore", "underlying")
+    VALUES ${Prisma.join(values)}
+    ON CONFLICT ("symbol", "bucketStart") DO UPDATE SET
+      "putVolume" = EXCLUDED."putVolume",
+      "callVolume" = EXCLUDED."callVolume",
+      "putCallRatio" = EXCLUDED."putCallRatio",
+      "spikeScore" = EXCLUDED."spikeScore"
   `;
 }
 
@@ -246,6 +295,8 @@ export async function recordDailyMetrics(engine: FlowEngine): Promise<void> {
   });
 }
 
+const closeBackfillTried = new Set<string>();
+
 /**
  * Backfill DailyMetric.close from CBOE's 20-year daily history so HV, the
  * 20-day price trend and price-derived sector relatives are real from day one.
@@ -266,7 +317,11 @@ export async function backfillCloseHistory(engine: FlowEngine, budget = 80): Pro
       _count: { _all: true },
     });
     const have = new Map(counts.map((c) => [c.symbol, c._count._all]));
-    const targets = TRACKED_UNIVERSE.filter(({ symbol }) => (have.get(symbol) ?? 0) < 60).slice(0, budget);
+    // A name tried once this process (e.g. listed too recently for 60 sessions) is not re-fetched every pass.
+    const targets = TRACKED_UNIVERSE.filter(
+      ({ symbol }) => (have.get(symbol) ?? 0) < 60 && !closeBackfillTried.has(symbol),
+    ).slice(0, budget);
+    for (const { symbol } of targets) closeBackfillTried.add(symbol);
 
     let done = 0;
     for (const { symbol } of targets) {
@@ -377,24 +432,43 @@ async function captureEndOfDay(engine: FlowEngine, opts: { now?: Date; late?: bo
   return ok;
 }
 
+interface VolHistoryRow {
+  symbol: string;
+  date: Date;
+  iv30: number | null;
+  hv20: number | null;
+  putOI: number | null;
+  callOI: number | null;
+  rrSkew: number | null;
+}
+
+/** The year of finalized history IV rank reads, kept until the daily inputs change. */
+let volHistory: { key: string; bySymbol: Map<string, VolHistoryRow[]> } | null = null;
+
 /**
  * Refresh per-ticker vol context: IV rank from stored IV30 history, HV20 from
  * CBOE daily closes (fetched for up to `hvBudget` tickers per pass, so the
  * whole universe backfills within the first day), and yesterday's OI totals.
+ * IV rank follows today's live IV on every pass; the stored history it ranks
+ * against is re-read only when `historyKey` (dailyInputsKey) changes.
  */
-export async function refreshVolContext(engine: FlowEngine, hvBudget = 60): Promise<void> {
+export async function refreshVolContext(engine: FlowEngine, historyKey: string | null = null, hvBudget = 60): Promise<void> {
   await tryDb('refresh vol context', async (db) => {
-    const since = new Date(Date.now() - 370 * DAY_MS);
-    const rows = await db.dailyMetric.findMany({
-      where: finalizedMetricWhere({ date: { gte: since } }), // finalized rows only — IV-rank history + OI tiebreaker never read a provisional value (L2-2)
-      orderBy: { date: 'asc' },
-      select: { symbol: true, date: true, iv30: true, hv20: true, putOI: true, callOI: true, rrSkew: true },
-    });
-    const bySymbol = new Map<string, typeof rows>();
-    for (const row of rows) {
-      const list = bySymbol.get(row.symbol) ?? [];
-      list.push(row);
-      bySymbol.set(row.symbol, list);
+    let bySymbol = historyKey !== null && volHistory?.key === historyKey ? volHistory.bySymbol : null;
+    if (!bySymbol) {
+      const since = new Date(Date.now() - 370 * DAY_MS);
+      const rows: VolHistoryRow[] = await db.dailyMetric.findMany({
+        where: finalizedMetricWhere({ date: { gte: since } }), // finalized rows only — IV-rank history + OI tiebreaker never read a provisional value (L2-2)
+        orderBy: { date: 'asc' },
+        select: { symbol: true, date: true, iv30: true, hv20: true, putOI: true, callOI: true, rrSkew: true },
+      });
+      bySymbol = new Map<string, VolHistoryRow[]>();
+      for (const row of rows) {
+        const list = bySymbol.get(row.symbol) ?? [];
+        list.push(row);
+        bySymbol.set(row.symbol, list);
+      }
+      volHistory = historyKey !== null ? { key: historyKey, bySymbol } : null;
     }
 
     // Use the ET capture date (matching finalize/recordDailyMetrics), so that
@@ -460,33 +534,78 @@ async function backfillHV(engine: FlowEngine, hvBudget: number): Promise<void> {
   if (filled > 0) console.log(`[maintenance] HV20 computed for ${filled} tickers`);
 }
 
-/** One maintenance pass; scheduled every 2h and at startup. */
+/**
+ * Changes when what the daily jobs read changes: a new ET day, or finalized
+ * rows added (the end-of-day capture, a close backfill). Null without a database.
+ */
+async function dailyInputsKey(): Promise<string | null> {
+  return tryDb('daily inputs key', async (db) => {
+    const agg = await db.dailyMetric.aggregate({ where: { final: true }, _max: { date: true }, _count: { _all: true } });
+    return `${etDateKey().toISOString().slice(0, 10)}|${agg._max.date?.toISOString() ?? 'none'}|${agg._count._all}`;
+  });
+}
+
+/** dailyInputsKey as of the last pass that ran the daily jobs. */
+let lastDailyKey: string | null = null;
+let maintaining = false;
+
+/**
+ * True when a scheduled pass can find new work: trading days, 9:00–21:00 ET
+ * (the session, the end-of-day capture and the evening grading after it).
+ * Outside that window nothing the jobs read changes, and an idle database —
+ * one that scales to zero, or meters its hours — is left alone.
+ */
+export function maintenanceWindow(now = new Date()): boolean {
+  if (!isTradingDayNow(now)) return false;
+  const { minutesOfDay } = etTimeParts(now);
+  return minutesOfDay >= 9 * 60 && minutesOfDay < 21 * 60;
+}
+
+/**
+ * One maintenance pass; at startup and every 2h in maintenanceWindow. The
+ * intraday jobs run every pass; the daily ones (baselines, event detection,
+ * signal and projection grading, the edge book, retention) re-read whole
+ * tables, so they run only when dailyInputsKey has changed — about twice a
+ * trading day instead of every pass.
+ */
 export async function runMaintenance(engine: FlowEngine): Promise<void> {
-  const baselines = await computeBaselines(engine);
-  const scored = await scoreAlerts();
-  await recordDailyMetrics(engine);
-  await refreshVolContext(engine);
-  // Phase 3: detect idiosyncratic moves (SPY-residual feed), fill realized moves
-  // for confirmed calendar events, then reload the per-ticker event-gauge inputs.
-  const idio = await refreshIdiosyncraticEvents();
-  const realized = await refreshEarningsRealized();
-  await refreshEventGauges(engine);
-  // Phase 4.3: fill forward returns for signals whose 20-trading-day window elapsed.
-  const sigScored = await scoreSignals();
-  if (sigScored > 0) console.log(`[signals] scored ${sigScored} signals (20-td window elapsed)`);
-  // Learning loop: write tonight's edge book from the just-graded evidence
-  // (and reconstruct any missing past books under the current version).
-  const books = await refreshEdgeBooks();
-  if (books && books.written > 0) await loadConvictionsIntoEngine(engine);
-  // Projections: grade the ones whose expiry settled, then refresh how implied
-  // ranges have compared with real moves (skips when nothing new was finalized).
-  await gradeProjections();
-  await refreshProjectionHistory(engine);
-  await pruneHistory();
-  if (baselines > 0 || scored > 0 || idio > 0 || realized > 0) {
-    console.log(
-      `[maintenance] baselines refreshed for ${baselines} tickers, ${scored} alerts scored, ` +
-        `${idio} idiosyncratic moves, ${realized} realized earnings moves`,
-    );
+  if (maintaining) return; // a slow pass (e.g. filling a new database) never overlaps the next
+  maintaining = true;
+  try {
+    await backfillCloseHistory(engine);
+    const key = await dailyInputsKey();
+    const daily = key === null || key !== lastDailyKey;
+    const baselines = daily ? await computeBaselines(engine) : 0;
+    const scored = await scoreAlerts();
+    await recordDailyMetrics(engine);
+    await refreshVolContext(engine, key);
+    // Phase 3: detect idiosyncratic moves (SPY-residual feed), fill realized moves
+    // for confirmed calendar events, then reload the per-ticker event-gauge inputs.
+    const idio = daily ? await refreshIdiosyncraticEvents() : 0;
+    const realized = daily ? await refreshEarningsRealized() : 0;
+    await refreshEventGauges(engine);
+    if (daily) {
+      // Phase 4.3: fill forward returns for signals whose 20-trading-day window elapsed.
+      const sigScored = await scoreSignals();
+      if (sigScored > 0) console.log(`[signals] scored ${sigScored} signals (20-td window elapsed)`);
+      // Learning loop: write tonight's edge book from the just-graded evidence
+      // (and reconstruct any missing past books under the current version).
+      const books = await refreshEdgeBooks();
+      if (books && books.written > 0) await loadConvictionsIntoEngine(engine);
+      // Projections: grade the ones whose expiry settled.
+      await gradeProjections();
+    }
+    // How implied ranges have compared with real moves (skips when nothing new was finalized).
+    await refreshProjectionHistory(engine);
+    if (daily) await pruneHistory();
+    if (key !== null) lastDailyKey = key;
+    if (baselines > 0 || scored > 0 || idio > 0 || realized > 0) {
+      console.log(
+        `[maintenance] baselines refreshed for ${baselines} tickers, ${scored} alerts scored, ` +
+          `${idio} idiosyncratic moves, ${realized} realized earnings moves`,
+      );
+    }
+  } finally {
+    maintaining = false;
   }
 }

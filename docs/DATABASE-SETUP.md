@@ -1,96 +1,88 @@
-# Database Setup (Neon + Render) — 15 minutes, free
+# Database Setup (free) — ~10 minutes
 
-The dashboard runs without a database, but connecting one unlocks the
-intelligence layer: real 20-day spike baselines, 30-day history, ratio
-percentiles, the alert **accuracy scoreboard**, and settings that survive
-restarts. This guide uses **Neon** (free Postgres that doesn't expire, unlike
-Render's own 30-day free database).
+The dashboard runs without a database, but connecting one unlocks everything
+that learns: spike baselines, the end-of-day history, sector-relative
+analytics, signals and their track record, projections and their grading, and
+a scanner table that survives restarts.
 
-## Step 1 — Create the Neon database (~5 min)
+## Which free database
 
-1. Go to <https://neon.tech> → **Sign up** (you can use your GitHub login).
-2. Create a project:
-   - **Name:** `optionsflow` (anything works)
-   - **Postgres version:** default is fine
-   - **Region:** pick the one matching your Render region — Render's default
-     is Oregon (US West), so choose **AWS us-west-2 (Oregon)**. If your Render
-     service is in Ohio/Virginia, pick the matching US East region instead.
-3. On the project dashboard, find **Connection string**. Choose the
-   **direct/unpooled** connection option, and reveal/copy the full string.
-   It looks like:
+The app writes every 30 seconds through each trading session and keeps well
+under 1 GB. What matters in a free plan is therefore **no limit on running
+hours** and **enough storage**:
 
-   ```
-   postgresql://neondb_owner:AbC123xyz@ep-cool-name-a1b2c3d4.us-west-2.aws.neon.tech/neondb?sslmode=require
-   ```
+| | Aiven Free (recommended) | Supabase Free | Neon Free |
+|---|---|---|---|
+| Running hours | Always on, not metered | Always on, not metered | **100 compute-hours a month**, then suspended until the next month |
+| Storage | 1 GB | 0.5 GB | 0.5 GB |
+| Data transfer | Not metered | 5 GB a month | 5 GB a month |
+| Backups | Included | None | Yes |
+| Connections | 20 | Via its pooler | Plenty |
+| Sleeps | Only if unused for a long time (notice first) | After 7 days without activity | After 5 idle minutes; wakes on the next connection |
 
-   Keep `?sslmode=require` on the end — Neon requires SSL. (The app is one
-   long-lived server with a handful of connections, so the direct string is
-   the right choice over the pooled one.)
+All three need no credit card. Neon's hour meter is what took this app down in
+October 2026 (DECISIONS §0.8a); the app now does far less database work, but a
+metered plan still risks a mid-month shutdown, so prefer an always-on one.
+Plans change — check each provider's pricing page.
 
-## Step 2 — Give it to Render (~2 min)
+## Aiven (recommended)
 
-1. Render dashboard → your service → **Environment**.
-2. **Add Environment Variable:** key `DATABASE_URL`, value = the full
-   connection string from step 1.
-3. Save. Render redeploys automatically.
-
-## Step 3 — Create the tables (~2 min)
-
-Render's free tier has no shell access, so table creation runs during the
-build instead:
-
-1. Render → your service → **Settings** → **Build Command** → change it to:
+1. Sign up at <https://aiven.io> (GitHub login works; no card).
+2. **Create service → PostgreSQL → Free plan.**
+3. **Region:** the free plan runs in a few DigitalOcean regions. Pick the one
+   nearest your app — Railway shows its region under the service's
+   **Settings → Region**: US East → **New York**, US West → **San Francisco**.
+4. Wait until the service shows **Running** (a few minutes), then copy its
+   **Service URI**. It looks like:
 
    ```
-   npm install && npm run build && npx prisma db push
+   postgres://avnadmin:AbC123@pg-abc-yourproject.d.aivencloud.com:12345/defaultdb?sslmode=require
    ```
 
-2. Save, then **Manual Deploy → Deploy latest commit**.
-3. Watch the logs: after the Next.js build you should see Prisma connect and
+5. In Railway → your service → **Variables**, set `DATABASE_URL` to that URI
+   and deploy. The pre-deploy step (`npm run db:push:deploy`) creates the
+   tables before the new version starts.
 
-   ```
-   🚀  Your database is now in sync with your Prisma schema.
-   ```
+The app limits itself to 5 connections unless the URL sets
+`connection_limit` (Aiven's free cap is 20, shared with the pre-deploy step and
+the outgoing deploy while a new one starts).
 
-This is safe to leave in place permanently — `prisma db push` is a no-op when
-the schema hasn't changed, and applies new tables automatically whenever you
-upload a new version of the app.
+## Supabase (alternative)
 
-## Step 4 — Verify (~1 min)
+1. Sign up at <https://supabase.com> → **New project**, region nearest your app.
+2. **Connect → Session pooler** — copy that string (it works over IPv4; the
+   direct connection is IPv6-only). Replace `[YOUR-PASSWORD]` with the
+   database password you set.
+3. Set it as `DATABASE_URL` in Railway and deploy.
 
-- The dashboard's status bar should now show **"DB connected"** instead of
-  "DB off — live only".
-- `https://your-app.onrender.com/api/health` shows `"dbConnected":true`.
+Supabase pauses a free project after 7 days with no database activity; this
+app writes to it every trading day, so that does not happen while it runs.
 
-## What happens next (automatic)
+## Moving from one database to another
 
-- Every poll cycle stores 5-minute snapshots; every fired alert is recorded.
-- A maintenance job (every 2 hours) rolls snapshots into **20-day per-ticker
-  baselines**, scores day-old alerts against the next day's move
-  (**Accuracy** tab), and prunes old data (35-day snapshots, 120-day alerts)
-  so the free tier's 0.5 GB storage is never a problem.
-- Expect the Accuracy tab to show its first scored alerts **the day after**
-  the first alerts fire, and baselines to reach full strength after ~20
-  trading days of collection.
+The new database starts empty. On the first start the app:
 
-## Important: keep it collecting
+- refills the scanner table from the feed (after hours: a catch-up to the last
+  close, ~15–20 minutes) and captures the day if it was missed;
+- backfills ~120 sessions of daily closes for the whole universe from CBOE,
+  80 names per maintenance pass (a few trading days for all ~1,400);
+- builds volume baselines again from new snapshots (they need 3+ days).
 
-Data only accumulates while the Render instance is awake. Set up a free
-pinger so it runs through every session:
+What cannot be rebuilt from the feed — past days' IV, skew, open interest and
+gamma, signals, projections and the edge book — lives only in the old
+database. Keep it until it has been copied over.
 
-1. Sign up at <https://cron-job.org> (free).
-2. Create a job: URL = `https://your-app.onrender.com/api/health`,
-   schedule = **every 10 minutes**, Monday–Friday, 9:00–16:30 in
-   **America/New_York** time.
+## Verify
 
-Without this, the instance sleeps 15 minutes after your last visit and stops
-recording — baselines and accuracy stats will build much more slowly.
+- `https://your-app/api/health` shows `"dbConnected":true`.
+- The deploy log shows `[poller] loaded N stored baselines` and, after hours,
+  `[poller] market closed — catching N names up …`.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Log shows `P1001: Can't reach database server` | Connection string typo, or Neon project is in a very distant region. Re-copy the string; confirm `?sslmode=require` is present. |
-| `prisma db push` asks for `--accept-data-loss` | Only happens if the schema changed incompatibly between versions. Add `--accept-data-loss` to the build command once, deploy, then remove it. |
-| Status bar still says "DB off" | The env var is named exactly `DATABASE_URL`? Redeployed after adding it? |
-| Neon shows the database "idle" | Normal — Neon free tier autosuspends after 5 min without queries and wakes in ~1 s on the next one. |
+| Pre-deploy log: `P1001: Can't reach database server` | The database is asleep or stopped. The step retries for ~2.5 minutes; if it still fails, open the provider's dashboard — the service may be powered off or out of quota. |
+| `too many connections` / `remaining connection slots are reserved` | Add `&connection_limit=3` to the URL. |
+| `prisma db push` asks for `--accept-data-loss` | The schema changed incompatibly. Run `npx prisma db push --accept-data-loss` once against the database, then redeploy. |
+| `/api/health` shows `"dbConnected":false` | The variable must be named exactly `DATABASE_URL`, and the service redeployed after setting it. |

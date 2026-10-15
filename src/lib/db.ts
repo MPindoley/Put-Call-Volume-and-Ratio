@@ -8,14 +8,20 @@ import { PrismaClient } from '@prisma/client';
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient | null };
 
 /**
- * Allow 30 s to connect unless the URL says otherwise. A database that scales
- * to zero (Neon's free tier) can take longer than Prisma's default 5 s to
- * wake, and the first query after an idle spell would otherwise fail.
+ * Connection defaults for a small hosted database, each applied only when the
+ * URL does not set it:
+ *  - connect_timeout=30: a database that scales to zero (Neon's free tier) can
+ *    take longer than Prisma's default 5 s to wake, and the first query after
+ *    an idle spell would otherwise fail;
+ *  - connection_limit=5: Prisma's default pool is 2 × CPUs + 1, which on a
+ *    large host exceeds a free plan's cap (Aiven's is 20, shared with the
+ *    pre-deploy step and the outgoing deploy). One server needs few.
  */
-export function withConnectTimeout(raw: string, seconds = 30): string {
+export function withConnectionDefaults(raw: string): string {
   try {
     const u = new URL(raw);
-    if (!u.searchParams.has('connect_timeout')) u.searchParams.set('connect_timeout', String(seconds));
+    if (!u.searchParams.has('connect_timeout')) u.searchParams.set('connect_timeout', '30');
+    if (!u.searchParams.has('connection_limit')) u.searchParams.set('connection_limit', '5');
     return u.toString();
   } catch {
     return raw;
@@ -27,7 +33,7 @@ function createClient(): PrismaClient | null {
   try {
     return new PrismaClient({
       log: ['warn', 'error'],
-      datasources: { db: { url: withConnectTimeout(process.env.DATABASE_URL) } },
+      datasources: { db: { url: withConnectionDefaults(process.env.DATABASE_URL) } },
     });
   } catch (err) {
     console.error('[db] failed to initialize Prisma client, running without persistence:', err);
