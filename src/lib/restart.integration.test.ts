@@ -106,11 +106,15 @@ describe.skipIf(!RUN)('restart safety (RUN_DB_TESTS=1)', () => {
       Math.ceil(TRACKED_UNIVERSE.length * 0.5) + 5,
     );
     for (const s of symbols) engine.ingest(closeSnap(s), AFTER_WINDOW.getTime());
+    // A name the feed still serves from last week (it stopped trading): never pinned as today's.
+    const ghost = TRACKED_UNIVERSE.map((u) => u.symbol).find((s) => !symbols.includes(s))!;
+    engine.ingest({ ...closeSnap(ghost), asOf: CLOSE_ASOF - 5 * 86_400_000 }, AFTER_WINDOW.getTime());
 
     // Outside the regular window, only a late (post-catch-up) capture runs.
     expect(await maybeCaptureEndOfDay(engine, { now: AFTER_WINDOW })).toBe(false);
     expect(await maybeCaptureEndOfDay(engine, { now: AFTER_WINDOW, late: true })).toBe(true);
     expect(await db.dailyMetric.count({ where: { date: TODAY, final: true, historicalCloseOnly: false } })).toBe(symbols.length);
+    expect(await db.dailyMetric.count({ where: { symbol: ghost, date: TODAY } })).toBe(0);
 
     // The orphan regime row was rebuilt from the real inputs, once.
     const rebuilt = await db.dailyRegime.findUnique({ where: { date: TODAY } });

@@ -12,6 +12,7 @@ import { Card, CardHeader } from '@/components/ui/card';
 import { PageHeader } from '@/components/shell/PageHeader';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Calibration, SignalSummary } from '@/lib/learning';
+import type { CoverageReport, Stage, StageStatus, StockCoverage } from '@/lib/learning-coverage';
 import type { LearningReport } from '@/lib/learning-jobs';
 import type { Coverage, HorizonKey } from '@/lib/projection-history';
 import { Term } from '@/components/ui/term';
@@ -86,11 +87,203 @@ export function LearningView(): JSX.Element {
         <StatusCard r={report.data} />
       )}
 
+      <CoverageCard />
+
       <LearnedCard data={summary.data} loading={summary.isLoading} />
 
       {report.data && <SelfGradeCard c={report.data.selfGrade} />}
       <ProjectionRecordCard />
       {report.data && <HealthCard r={report.data} />}
+    </div>
+  );
+}
+
+const STAGE_ROWS: { stage: Stage; name: string; needs: (t: CoverageReport['thresholds']) => string }[] = [
+  { stage: 'capture', name: 'Captured each session', needs: () => 'Options data pinned at every close' },
+  { stage: 'options', name: 'Options data', needs: () => 'IV, skew and open interest on those captures' },
+  {
+    stage: 'sector',
+    name: 'Sector comparison',
+    needs: (t) => `z-scores vs its peers: ${t.zMinObs30} sessions (30-day), ${t.zMinObs90} (90-day)`,
+  },
+  {
+    stage: 'signals',
+    name: 'Signal learning',
+    needs: (t) => `Its own record counts fully at ${t.stockSignals} graded signals; until then it leans on its sector and the market`,
+  },
+  { stage: 'projection', name: 'Projection check', needs: (t) => `${t.projectionPeriods} independent weeks of real vs priced moves` },
+];
+const STATUS_ORDER: StageStatus[] = ['ready', 'warming', 'problem', 'n/a'];
+const STATUS_LABEL: Record<StageStatus, string> = { ready: 'Ready', warming: 'Warming up', problem: 'Problem', 'n/a': 'n/a' };
+const STATUS_CLASS: Record<StageStatus, string> = {
+  ready: 'text-bullish',
+  warming: 'text-slate-300',
+  problem: 'text-bearish',
+  'n/a': 'text-slate-600',
+};
+
+/** Is every stock's data reaching every stage of the learning? Stage counts, stocks needing attention, and a lookup. */
+function CoverageCard(): JSX.Element {
+  const q = useQuery({
+    queryKey: ['learning-coverage'],
+    queryFn: () => getJson<CoverageReport>('/api/learning/coverage'),
+    refetchInterval: 600_000,
+  });
+  const [lookup, setLookup] = useState('');
+  const [symbol, setSymbol] = useState<string | null>(null);
+  const one = useQuery({
+    queryKey: ['learning-coverage', symbol],
+    queryFn: () => getJson<StockCoverage>(`/api/learning/coverage?symbol=${encodeURIComponent(symbol ?? '')}`),
+    enabled: symbol !== null,
+    retry: false,
+  });
+
+  if (q.isLoading) return <Skeleton className="h-40 w-full" />;
+  if (q.isError || !q.data) {
+    return (
+      <Card>
+        <CardHeader title="Data coverage by stock" />
+        <p className="p-4 text-xs text-slate-400">Needs a connected database.</p>
+      </Card>
+    );
+  }
+  const r = q.data;
+  const flagged = new Set(r.attention.flatMap((g) => g.stocks.map((s) => s.symbol))).size;
+  return (
+    <Card>
+      <CardHeader
+        title="Data coverage by stock — is each stock's data reaching the learning?"
+        right={<span className="text-[10px] text-slate-500">{r.sessions.captured} sessions captured · latest {r.sessions.latest ?? '—'}</span>}
+      />
+      <div className="overflow-x-auto p-4">
+        <table className="w-full min-w-[640px] text-xs">
+          <thead>
+            <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500">
+              <th className="py-1 pr-3 font-medium">Stage</th>
+              <th className="py-1 pr-3 font-medium">What it needs</th>
+              {STATUS_ORDER.map((s) => (
+                <th key={s} className="py-1 pl-2 text-right font-medium">
+                  {STATUS_LABEL[s]}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {STAGE_ROWS.map(({ stage, name, needs }) => (
+              <tr key={stage} className="border-t border-surface-border/60">
+                <td className="py-1.5 pr-3 text-slate-200">{name}</td>
+                <td className="py-1.5 pr-3 text-slate-500">{needs(r.thresholds)}</td>
+                {STATUS_ORDER.map((s) => (
+                  <td key={s} className={cn('py-1.5 pl-2 text-right tnum', r.stages[stage][s] > 0 ? STATUS_CLASS[s] : 'text-slate-700')}>
+                    {r.stages[stage][s]}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
+          <span className="text-slate-400">Warming up</span> = data is arriving but there is not enough of it yet;{' '}
+          <span className="text-bearish">Problem</span> = data that should be arriving is not. ETFs are benchmarks: no sector
+          comparison or directional learning is expected for them.
+        </p>
+      </div>
+
+      <div className="border-t border-surface-border px-4 py-3">
+        <p className="mb-2 text-[10px] uppercase tracking-wider text-slate-500">
+          Needs attention ({flagged} {flagged === 1 ? 'stock' : 'stocks'})
+        </p>
+        {r.attention.length === 0 ? (
+          <p className="text-xs text-slate-400">Every stock&apos;s data is reaching every stage it should.</p>
+        ) : (
+          <div className="space-y-3">
+            {r.attention.map((g) => (
+              <IssueGroup key={g.kind} label={g.label} stocks={g.stocks} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-surface-border px-4 py-3">
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (lookup.trim()) setSymbol(lookup.trim().toUpperCase());
+          }}
+        >
+          <label htmlFor="coverage-lookup" className="text-[10px] uppercase tracking-wider text-slate-500">
+            Check a stock
+          </label>
+          <input
+            id="coverage-lookup"
+            value={lookup}
+            onChange={(e) => setLookup(e.target.value)}
+            placeholder="e.g. AAPL"
+            className="w-28 rounded border border-surface-border bg-surface px-2 py-1 text-xs text-slate-200"
+          />
+          <button type="submit" className="rounded border border-surface-border px-2 py-1 text-xs text-slate-300 hover:text-slate-100">
+            Check
+          </button>
+        </form>
+        {symbol && one.isError && <p className="mt-2 text-xs text-slate-400">{symbol} is not in the tracked universe.</p>}
+        {one.data && <StockCoverageLine c={one.data} thresholds={r.thresholds} />}
+      </div>
+    </Card>
+  );
+}
+
+/** One kind of problem: its stocks, the first dozen shown. */
+function IssueGroup({ label, stocks }: { label: string; stocks: CoverageReport['attention'][number]['stocks'] }): JSX.Element {
+  const [all, setAll] = useState(false);
+  const shown = all ? stocks : stocks.slice(0, 12);
+  return (
+    <div>
+      <p className="mb-1 text-xs font-medium text-slate-300">
+        {label} <span className="font-normal text-slate-500">· {stocks.length}</span>
+      </p>
+      <ul className="space-y-0.5 text-xs">
+        {shown.map((s) => (
+          <li key={s.symbol} className="flex gap-3">
+            <a href={`/ticker/${encodeURIComponent(s.symbol)}`} className="w-16 shrink-0 font-semibold text-slate-200 hover:underline">
+              {s.symbol}
+            </a>
+            <span className="text-slate-400">{s.text}</span>
+          </li>
+        ))}
+      </ul>
+      {stocks.length > 12 && (
+        <button onClick={() => setAll((v) => !v)} className="mt-1 text-[11px] text-blue-400 hover:underline">
+          {all ? 'Show fewer' : `Show all ${stocks.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function StockCoverageLine({ c, thresholds: t }: { c: StockCoverage; thresholds: CoverageReport['thresholds'] }): JSX.Element {
+  const detail: Record<Stage, string> = {
+    capture: `${c.captured} sessions · ${c.recent} of the last ${t.recentSessions}`,
+    options: `${c.recentWithOptions} of its last ${c.recent} captures complete`,
+    sector: `${c.relRows} sessions of spreads · ${c.z30Rows} with a 30-day z · ${c.z90Rows} with a 90-day z`,
+    signals: `${c.signalsGraded} graded of ${c.signalsLogged} logged (own record counts fully at ${t.stockSignals})`,
+    projection: c.projection ? `${c.projection.week} independent weeks · ${c.projection.month} months` : 'no history yet',
+  };
+  return (
+    <div className="mt-3 rounded-md border border-surface-border bg-surface p-3 text-xs">
+      <p className="mb-2 font-semibold text-slate-100">
+        {c.symbol} <span className="font-normal text-slate-500">· {c.sector}</span>
+      </p>
+      <ul className="space-y-1">
+        {STAGE_ROWS.map(({ stage, name }) => (
+          <li key={stage} className="flex gap-3">
+            <span className="w-40 shrink-0 text-slate-400">{name}</span>
+            <span className={cn('w-20 shrink-0', STATUS_CLASS[c.stages[stage]])}>{STATUS_LABEL[c.stages[stage]]}</span>
+            <span className="text-slate-500">{detail[stage]}</span>
+          </li>
+        ))}
+      </ul>
+      {c.issues.length > 0 && <p className="mt-2 text-bearish">{c.issues.map((i) => i.text).join(' · ')}</p>}
     </div>
   );
 }

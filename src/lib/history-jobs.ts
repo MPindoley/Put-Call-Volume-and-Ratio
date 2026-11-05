@@ -29,7 +29,7 @@ import { logSignals, scoreSignals, trackBackwardationEpisodes } from './signal-j
 import { loadConvictionsIntoEngine, refreshEdgeBooks } from './learning-jobs';
 import { gradeProjections, logProjections, refreshProjectionHistory } from './projection-jobs';
 import type { FlowEngine } from './flow-engine';
-import { finalizeDailyCapture, loadLatestIntoEngine } from './sector-analytics';
+import { finalizeDailyCapture, findThinRelativeDays, loadLatestIntoEngine, recomputeRelativeDay } from './sector-analytics';
 import { NOT_SEEDED } from './seed-guard';
 import { DEFAULT_INTRADAY_SHAPE } from './spike-detector';
 import { etDateKey, etTimeParts, inCaptureWindow, isTradingDayNow, pastCaptureStart } from './trading-calendar';
@@ -534,6 +534,40 @@ async function backfillHV(engine: FlowEngine, hvBudget: number): Promise<void> {
   if (filled > 0) console.log(`[maintenance] HV20 computed for ${filled} tickers`);
 }
 
+/** Sessions already repaired in this process: each is tried once, even if some rows stay thin. */
+const repairTried = new Set<number>();
+
+/**
+ * Fill in sector-relative z-scores for sessions computed before enough history
+ * existed (findThinRelativeDays), oldest first, then log the z-dependent
+ * signals those sessions missed (skew extremes, divergences, regime breaks).
+ * Point-in-time: each session reads only rows before it. Event badges are not
+ * rebuilt (they come from live state). A no-op when nothing is thin.
+ */
+export async function repairThinRelativeDays(): Promise<{ days: number; rows: number; signals: number }> {
+  const cfg = await getAnalyticsConfig();
+  const out = { days: 0, rows: 0, signals: 0 };
+  await tryDb('repair thin relative days', async (db) => {
+    const since = new Date(Date.now() - 400 * DAY_MS);
+    const days = (await findThinRelativeDays(db, cfg, since)).filter((d) => !repairTried.has(d.getTime()));
+    for (const day of days) {
+      repairTried.add(day.getTime());
+      const gained = await recomputeRelativeDay(db, day, cfg);
+      if (gained === 0) continue;
+      out.days += 1;
+      out.rows += gained;
+      // Afternoon UTC is still that session's ET date.
+      out.signals += await logSignals(null, new Date(day.getTime() + 20 * 3_600_000));
+    }
+  });
+  if (out.days > 0) {
+    console.log(
+      `[repair] sector z-scores filled for ${out.rows} rows over ${out.days} sessions; ${out.signals} signals those sessions had missed were logged`,
+    );
+  }
+  return out;
+}
+
 /**
  * Changes when what the daily jobs read changes: a new ET day, or finalized
  * rows added (the end-of-day capture, a close backfill). Null without a database.
@@ -584,6 +618,10 @@ export async function runMaintenance(engine: FlowEngine): Promise<void> {
     const realized = daily ? await refreshEarningsRealized() : 0;
     await refreshEventGauges(engine);
     if (daily) {
+      // Sessions whose sector z-scores were computed before their history was on
+      // hand (a new database, an import): fill them in and log the signals they
+      // missed, before grading, so the learning sees every session it can.
+      await repairThinRelativeDays();
       // Phase 4.3: fill forward returns for signals whose 20-trading-day window elapsed.
       const sigScored = await scoreSignals();
       if (sigScored > 0) console.log(`[signals] scored ${sigScored} signals (20-td window elapsed)`);
