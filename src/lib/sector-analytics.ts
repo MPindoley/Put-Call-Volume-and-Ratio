@@ -198,9 +198,14 @@ export async function finalizeDailyCapture(engine: FlowEngine, now = new Date())
   const ok = await tryDb('finalize daily capture', async (db) => {
     const caps = await loadCaps(db);
 
-    // 1. Pin finalized DailyMetric rows from live engine state.
+    // 1. Pin finalized DailyMetric rows from live engine state — only rows that
+    // hold THIS session's data. A name the feed still serves from days ago (it
+    // stopped trading, or its refresh kept failing) would otherwise be pinned
+    // as today's session: a ghost close for the learning to discard, and a
+    // stale IV/skew inside every sector median and z-score.
     for (const flow of engine.allFlows()) {
       if (flow.lastUpdated === 0) continue;
+      if (etDateKey(new Date(flow.dataAsOf)).getTime() !== date.getTime()) continue;
       const priceTrend20 = await computePriceTrend(db, flow.symbol, date, flow.underlyingPrice);
       const optVolume = flow.sessionPutVolume + flow.sessionCallVolume;
       const data = {
@@ -473,6 +478,63 @@ function round4(v: number | null): number | null {
 }
 function round2s(v: number | null): number | null {
   return v === null || !Number.isFinite(v) ? null : Number(v.toFixed(2));
+}
+
+// ─── Repair ───────────────────────────────────────────────────────────────────
+
+/**
+ * Days whose sector-relative z-scores were computed before the history they
+ * need was on hand: a new, empty database (z30 needs 20 earlier sessions), or
+ * history imported after the fact. Their spreads are stored, but skewZ30 is
+ * null although the 90 rows before the day now hold at least zMinObs30 values
+ * (exactly what computeZScores needs). Oldest first.
+ */
+export async function findThinRelativeDays(db: PrismaClient, cfg: AnalyticsConfig, since: Date): Promise<Date[]> {
+  // One pass (a window over each symbol's rows) rather than a lookup per row:
+  // measured 0.1 s vs 4.8 s on 84k rows with most z-scores missing.
+  const rows = await db.$queryRaw<{ date: Date }[]>`
+    SELECT w."date"
+    FROM (
+      SELECT r."date", r."skewRelSpread", r."skewZ30",
+             count(r."skewRelSpread") OVER (
+               PARTITION BY r."symbol", r."compositionVersion" ORDER BY r."date"
+               ROWS BETWEEN ${cfg.z90Window} PRECEDING AND 1 PRECEDING
+             ) AS prior
+      FROM "RelativeMetric" r
+      WHERE r."final" AND NOT r."seeded"
+    ) w
+    WHERE w."date" >= ${since} AT TIME ZONE 'UTC'
+      AND w."skewRelSpread" IS NOT NULL AND w."skewZ30" IS NULL AND w.prior >= ${cfg.zMinObs30}
+    GROUP BY w."date"
+    ORDER BY w."date"
+  `;
+  return rows.map((r) => r.date);
+}
+
+/**
+ * Recompute the z-scores, regime-detach flag and divergence of one day's rows
+ * that lack a skew z-score, from their stored spreads and each row's own
+ * composition version. Point-in-time: only rows before the day are read.
+ * Returns how many rows gained a z-score.
+ */
+export async function recomputeRelativeDay(db: PrismaClient, date: Date, cfg: AnalyticsConfig): Promise<number> {
+  const rows = await db.relativeMetric.findMany({ where: { date, final: true, skewZ30: null, ...NOT_SEEDED } });
+  let gained = 0;
+  for (const r of rows) {
+    const spreads = {
+      ivRelSpread: r.ivRelSpread,
+      skewRelSpread: r.skewRelSpread,
+      oiPcRelSpread: r.oiPcRelSpread,
+      ivHvRelSpread: r.ivHvRelSpread,
+    };
+    const z = await computeZScores(db, r.symbol, date, r.compositionVersion, spreads, cfg);
+    if (z.fields['skewZ30'] === null || z.fields['skewZ30'] === undefined) continue;
+    const regime = detectRegimeDetach(z, cfg.regimeDetachSigma);
+    const divergence = await computeDivergence(db, r.symbol, date, r.compositionVersion, z.fields['skewZ30'], cfg);
+    await db.relativeMetric.update({ where: { id: r.id }, data: { ...z.fields, windowDays: z.windowDays, ...regime, ...divergence } });
+    gained += 1;
+  }
+  return gained;
 }
 
 /** Regime detach: needs a non-null z90 (so it cannot fire below the 90-day minimum). */

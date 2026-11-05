@@ -34,8 +34,12 @@ const utcDate = (s: string): Date => new Date(`${s}T00:00:00Z`);
 type Dir = 'bullish' | 'bearish';
 const flip = (d: Dir, inverse: boolean): Dir => (inverse ? (d === 'bullish' ? 'bearish' : 'bullish') : d);
 
-/** Emit today's signals from finalized rows. Returns rows written. */
-export async function logSignals(engine: FlowEngine, now = new Date()): Promise<number> {
+/**
+ * Emit a session's signals from its finalized rows. Returns rows written.
+ * `engine` supplies today's event gauges; pass null to log a PAST session from
+ * stored rows alone (the gauge is live state, so no event badge is emitted).
+ */
+export async function logSignals(engine: FlowEngine | null, now = new Date()): Promise<number> {
   const cfg = await getAnalyticsConfig();
   const tVersion = thresholdVersion(cfg);
   const rVersion = regimeConfigVersion({
@@ -155,7 +159,7 @@ export async function logSignals(engine: FlowEngine, now = new Date()): Promise<
         // event_badge — rich/cheap prediction track (own hit definition). Mid-percentile
         // events are logged as 'fair': no hit is scored on them, but their implied-vs-
         // realized pair feeds the unconditional undershoot base rate.
-        const gauge = engine.getFlow(dm.symbol)?.eventGauge;
+        const gauge = engine?.getFlow(dm.symbol)?.eventGauge;
         if (gauge?.display && gauge.percentile !== null && gauge.impliedMove !== null && gauge.eventDate) {
           const pred = gauge.percentile >= 70 ? 'rich' : gauge.percentile <= 30 ? 'cheap' : 'fair';
           rows.push({

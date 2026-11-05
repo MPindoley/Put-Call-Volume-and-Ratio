@@ -578,6 +578,41 @@ how to read it and where it misleads; `<Term>` renders it on hover, focus or
 tap, and the scanner headers append the same text. **If reversed** (ad-hoc
 tooltips): definitions drift between pages.
 
+### 5.13 Only this session's data is pinned at the close
+`finalizeDailyCapture` pins a row only when its data is from the session being
+captured (the same rule as the provisional rows and the capture guard). A
+name the feed still serves from days ago — it stopped trading (AVB, EQR, QRVO,
+WBD in October 2026), or its refresh kept failing — used to be pinned every
+night with its old close, IV and skew: a ghost close the learning then had to
+discard, and a stale value inside its sector's medians and every peer's
+z-score. **If reversed:** dead names keep feeding sector statistics.
+
+### 5.14 Sessions computed before their history existed are repaired
+The sector z-scores need 20 (30-day) and 60 (90-day) earlier sessions. A new
+database — the move to Aiven ran from Oct 14 with the history arriving only on
+Nov 1 — computes every session until then with null z-scores, so the skew,
+divergence and regime-break signals those sessions should have fired never
+were. `repairThinRelativeDays` (daily pass, before grading) finds sessions
+whose spread is stored but whose z is null although the 90 rows before them
+now hold enough values, recomputes them oldest first from rows before each
+session only (point-in-time), and logs the z-dependent signals they missed
+(`createdAt` records that they were logged late; event badges come from live
+state and are not rebuilt). Stored edge books are not rewritten: the
+recovered signals enter the evidence of the books that follow. **If
+reversed:** about three weeks of evidence is missing from the learning for
+good.
+
+### 5.15 Coverage is checked per stock, on the real database
+The Learning page's coverage card (`learning-coverage.ts`,
+`/api/learning/coverage`) shows, for every tracked stock, whether its data
+reaches each stage — capture, options data, sector comparison, signal
+learning, the projection check — as ready, warming up (arriving, not enough
+yet) or a problem (data that should arrive does not: stopped updating, missing
+sessions, incomplete options data, no peer group, z-scores not computed), with
+a per-stock lookup. **Reasoning:** the learning's inputs are only as good as
+the coverage behind them, and a gap in one stock is invisible in the
+aggregate numbers.
+
 ---
 
 ## 6. Cross-cutting invariants (the short list a reviewer should protect)
