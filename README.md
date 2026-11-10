@@ -20,11 +20,17 @@ IWM = Russell 2000) pinned in a dedicated strip.
 - **Aggregate P/C dashboard** — S&P 500 hero ratio with trend arrow, sector
   ratios, per-ticker diverging heatmap, intraday ratio chart with an SPY pane
   on a synced time axis (TradingView Lightweight Charts).
-- **Spike detection** — 20-day baseline × intraday time-of-day profile →
-  expected volume; elevated (>2×), significant (>5×), extreme (>10×) levels;
+- **Spike detection** — 20-day baseline × each name's own learned daily clock
+  (its usual share of the day per half hour, separately for regular,
+  weekly-expiry and earnings days) → expected volume; elevated (>2×),
+  significant (>5×), extreme (>10×) levels;
   premium + contract-count noise filters; consecutive-cycle confirmation;
   block-trade and single-print heuristics; global sensitivity slider and
   per-ticker overrides.
+- **Spike follow-through** — every alert is graded on what the price did over
+  the next 30 minutes, 2 hours, to the close and to the next close (single
+  names against SPY); the record is learned by time of day × lean for all
+  names, each sector and each name, and quoted on live alerts.
 - **Real-time delivery** — Socket.io push (`flow-update`, `spike-alert`,
   `ratio-update`, `connection-status`) with automatic HTTP-polling fallback.
 - **Resilience** — data-freshness dot, simulator mode without an API key,

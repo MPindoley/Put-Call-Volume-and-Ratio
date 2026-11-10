@@ -510,6 +510,34 @@ model VolumeBaseline {
   @@index([symbol, computedAt])
 }
 
+/// What a name's option volume normally does through the session
+/// (intraday-profile.ts): for each of the 13 half-hour buckets, the share of the
+/// day's volume traded in it, split into puts and calls. Stored as
+/// recency-weighted running sums over the sessions folded in — one row per name
+/// per kind of day — because the 5-minute snapshots they are measured from are
+/// thinned after a few days. Means are sums ÷ weight.
+model IntradayProfile {
+  symbol      String
+  /// 'regular' | 'expiry' (last session of the week) | 'earnings' (the session reacting to a report)
+  dayType     String
+  /// Per bucket: Σ weight × (puts traded in the bucket ÷ the day's total volume).
+  putSum      Float[]
+  /// Per bucket: Σ weight × (calls traded in the bucket ÷ the day's total volume).
+  callSum     Float[]
+  /// Σ weight — the effective number of sessions behind the sums.
+  weight      Float
+  /// Sessions folded in, ever (undecayed).
+  sessions    Int
+  /// Latest session folded in; a session is never counted twice.
+  lastSession DateTime
+  /// Bumped when the method changes, so sums under different methods never mix.
+  method      String
+  updatedAt   DateTime @default(now())
+
+  @@id([symbol, dayType])
+  @@index([lastSession])
+}
+
 model Alert {
   id             String   @id @default(cuid())
   symbol         String
@@ -522,6 +550,29 @@ model Alert {
   createdAt      DateTime @default(now())
   /// Filled in later by the accuracy tracker: underlying % move after 1 day.
   moveNextDay    Float?
+
+  /// Follow-through grading (spike-outcomes.ts): what the price did after the
+  /// alert APPEARED (createdAt — the moment it could be acted on, which on a
+  /// delayed feed is later than the market moment that triggered it). % moves of
+  /// the underlying from `priceAt`; null = that window was not measurable (the
+  /// session ended first, or no price was on record near that time).
+  priceAt        Float?
+  /// SPY's price at the same moment.
+  spyAt          Float?
+  move30m        Float?
+  move2h         Float?
+  /// To that session's settled close.
+  moveClose      Float?
+  /// To the next session's settled close.
+  moveNext       Float?
+  /// SPY's % move over the same four windows, so a move can be read against the market.
+  spy30m         Float?
+  spy2h          Float?
+  spyClose       Float?
+  spyNext        Float?
+  /// 0 = not graded; 1 = the intraday windows are graded; 2 = finished (closes
+  /// graded too, or given up as unmeasurable).
+  gradeStage     Int      @default(0)
 
   ticker Ticker @relation(fields: [symbol], references: [symbol])
 

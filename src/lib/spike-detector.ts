@@ -15,18 +15,20 @@
  * When no stored 20-day baseline exists yet, the detector bootstraps an
  * adaptive baseline from the session itself (EMA), so it degrades gracefully
  * on first run / without a database.
+ *
+ * The intraday profile is each name's own learned clock for the kind of day it
+ * is (intraday-profile.ts: regular, weekly-expiry, earnings), once one has been
+ * loaded; until then, the fixed U-shape.
  */
 import type { AppSettings, SpikeLevel, TickerOverrideSettings } from '@/types';
-import { tradingBucket } from './utils';
+import { BUCKETS, DEFAULT_INTRADAY_SHAPE, dayTypeOf, expectedFraction, type DayType } from './intraday-profile';
+import { etTimeParts } from './trading-calendar';
+import { minutesSinceOpen } from './utils';
 
-/**
- * Intraday options volume profile: share of the day's volume traded in each
- * 30-min bucket (U-shape — heavy open and close). Used until enough stored
- * history exists to compute per-ticker profiles.
- */
-export const DEFAULT_INTRADAY_SHAPE = [
-  0.14, 0.10, 0.08, 0.07, 0.06, 0.06, 0.06, 0.06, 0.07, 0.08, 0.09, 0.10, 0.03,
-] as const;
+export { DEFAULT_INTRADAY_SHAPE };
+
+/** A name's share of the day's volume per half-hour bucket, for each kind of day. */
+export type ClockShapes = Record<DayType, readonly number[]>;
 
 export interface Baseline {
   avgDailyVolume: number;
@@ -80,6 +82,8 @@ interface TickerState {
 export class SpikeDetector {
   private baselines = new Map<string, Baseline>();
   private state = new Map<string, TickerState>();
+  private clocks = new Map<string, ClockShapes>();
+  private earningsSessions = new Map<string, ReadonlySet<string>>();
 
   setBaseline(symbol: string, baseline: Baseline): void {
     this.baselines.set(symbol, baseline);
@@ -87,6 +91,32 @@ export class SpikeDetector {
 
   hasBaseline(symbol: string): boolean {
     return this.baselines.has(symbol);
+  }
+
+  baseline(symbol: string): Baseline | null {
+    return this.baselines.get(symbol) ?? null;
+  }
+
+  /**
+   * Replace every name's learned clock, and the sessions on which each name
+   * reacts to earnings (ET dates) — what makes a day an "earnings" day for it.
+   */
+  setClocks(clocks: ReadonlyMap<string, ClockShapes>, earningsSessions: ReadonlyMap<string, ReadonlySet<string>>): void {
+    this.clocks = new Map(clocks);
+    this.earningsSessions = new Map(earningsSessions);
+  }
+
+  /** The kind of day `now` is for a name. */
+  dayType(symbol: string, now = new Date()): DayType {
+    return dayTypeOf(etTimeParts(now).dateKey, this.earningsSessions.get(symbol));
+  }
+
+  /** The profile `symbol` is judged against at `now`: its learned clock for that kind of day, else the stored or fixed one. */
+  private shapeFor(symbol: string, now: Date): readonly number[] {
+    const clock = this.clocks.get(symbol);
+    if (clock) return clock[this.dayType(symbol, now)];
+    const stored = this.baselines.get(symbol)?.intradayShape;
+    return stored && stored.length === BUCKETS ? stored : DEFAULT_INTRADAY_SHAPE;
   }
 
   /** Sample days behind a symbol's baseline (0 = unarmed). Persisted daily so the
@@ -98,11 +128,7 @@ export class SpikeDetector {
   /** Expected cumulative session volume for `symbol` right now. */
   expectedVolume(symbol: string, now = new Date()): number {
     const baseline = this.baselines.get(symbol);
-    const shape = baseline?.intradayShape ?? DEFAULT_INTRADAY_SHAPE;
-    const bucket = tradingBucket(now);
-    let cumulative = 0;
-    for (let i = 0; i <= bucket; i++) cumulative += shape[i] ?? 0;
-    cumulative = Math.max(cumulative, shape[0] ?? 0.1);
+    const cumulative = expectedFraction(this.shapeFor(symbol, now), minutesSinceOpen(now));
 
     if (baseline && baseline.avgDailyVolume > 0) {
       return baseline.avgDailyVolume * cumulative;

@@ -308,6 +308,25 @@ export interface SpikeAlert {
   contracts: number;
   putCallRatio: number;
   createdAt: number;
+  /**
+   * What followed past spikes like this one — same time of day, same lean
+   * (spike-outcomes.ts). Absent until enough have been graded.
+   */
+  followThrough?: SpikeFollowThrough | null;
+}
+
+/** What past spike alerts like a live one were followed by (spike-outcomes.ts). */
+export interface SpikeFollowThrough {
+  /** Whose record this is: the name's own, its sector's, or all names'. */
+  level: 'all' | 'sector' | 'ticker';
+  part: 'morning' | 'midday' | 'afternoon';
+  lean: 'calls' | 'puts';
+  /** Graded spikes behind it at that level. */
+  n: number;
+  /** Learned chance the price moves the spike's way over each window (0–1); null = not applicable or not learned yet. */
+  m30: number | null;
+  close: number | null;
+  next: number | null;
 }
 
 export interface AggregateRatio {

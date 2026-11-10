@@ -613,6 +613,71 @@ a per-stock lookup. **Reasoning:** the learning's inputs are only as good as
 the coverage behind them, and a gap in one stock is invisible in the
 aggregate numbers.
 
+### 5.16 Each name has its own daily clock (`intraday-profile.ts`)
+"Volume vs expected" is session volume against what is normal BY THIS TIME OF
+DAY. Until now that was one fixed U-shape for every name. It is now each
+name's own profile: the share of the day's option volume it trades in each of
+the 13 half hours, split into puts and calls, kept separately for regular
+days, weekly-expiry days (the week's last session) and the session reacting
+to its earnings.
+
+- **Measured from the 5-minute snapshots, then folded.** Snapshots carry
+  cumulative day volume; the curve is interpolated at each half-hour boundary.
+  A session counts only when the curve reaches the close, no boundary sits in
+  a gap longer than 75 minutes, and the day traded 200+ contracts; half days
+  are skipped. Each finished session is folded once into a recency-weighted
+  running sum (half-life 40 sessions of that kind) — 26 numbers per name per
+  kind of day — because the snapshots are thinned after 5 days and a 1 GB
+  database cannot keep them. The price: a changed method cannot be recomputed
+  from history, so `CLOCK_METHOD` stamps the rows and a new method starts over.
+- **Shrunk like everything else here.** fixed curve → all names → sector →
+  name, each level weighted n / (n + prior) (10 sessions for a name). An
+  expiry or earnings clock starts as the name's regular clock bent the way
+  that kind of day bends its sector's, and moves to the name's own data as it
+  arrives — a name has four earnings sessions a year, so on its own it would
+  never have a clock for them.
+- **Inside a half hour the expectation is interpolated**, not stepped to the
+  end of the bucket as before (which understated the multiple early in every
+  half hour). The first-half-hour floor stays: the opening minutes are judged
+  against the whole first half hour, and never against less than 5% of a day.
+- **The spike signal's definition moved with it.** Alerts — and so the
+  `spike_alert` signal — are now relative to the name's own clock. The
+  signal log's version stamp is NOT bumped: it is shared by every signal, and
+  bumping it would discard all learned evidence to mark a refinement of one;
+  the 120-session half-life lets the older spike evidence fade.
+
+**If reversed:** names that always trade early alert every morning, names that
+trade late never do, and every expiry Friday looks unusual.
+
+### 5.17 Spike alerts are graded intraday, by time of day (`spike-outcomes.ts`)
+An alert used to be graded on one number (the move about a day later). Each is
+now graded on four windows — 30 minutes, 2 hours, that session's close, the
+next session's close — and the results are learned per time of day (morning /
+midday / afternoon) × lean (call- or put-heavy), for all names, each sector
+and each name.
+
+- **Windows start when the alert APPEARED**, not at the market moment that set
+  it off: on the 15-minute-delayed feed the stretch in between could not have
+  been acted on, so it is not credited.
+- **Scored against SPY** for single names (the yardstick of §4.6), so a
+  call-heavy spike on a day the whole market rallies gets no credit for the
+  rally. ETFs are scored on their raw move, in a pool of their own.
+- **Shrunk from a coin flip:** 50% → all names → sector → name, weight
+  n / (n + prior) (30 / 40 / 40). Nothing is shown for a cell until 20 spikes
+  of that kind are graded across all names. A name that re-alerts within one
+  part of one session counts once. Observations halve in weight every 120
+  sessions.
+- **Graded in two steps** because the inputs expire at different times: the
+  intraday windows as soon as the session ends (they need the 5-minute
+  snapshots), the next-day window once that session has settled. An alert
+  with no price on record near it is closed unmeasured and never learned from.
+- **Live alerts quote the record** (`followThrough`): the name's own once it
+  has 10 graded spikes of that kind, else its sector's (20), else all names'.
+- Alerts are kept 400 days (was 120): graded alerts are the evidence.
+
+**If reversed:** an alert says volume is unusual and nothing about what that
+has meant at this hour.
+
 ---
 
 ## 6. Cross-cutting invariants (the short list a reviewer should protect)

@@ -16,6 +16,8 @@ import type { CoverageReport, Stage, StageStatus, StockCoverage } from '@/lib/le
 import type { LearningReport } from '@/lib/learning-jobs';
 import type { Coverage, HorizonKey } from '@/lib/projection-history';
 import { Term } from '@/components/ui/term';
+import { SpikeTableView } from '@/components/ticker/IntradayCards';
+import type { IntradayLearningResponse } from '@/app/api/learning/intraday/route';
 import { cn } from '@/lib/utils';
 
 interface SummaryResponse {
@@ -92,6 +94,7 @@ export function LearningView(): JSX.Element {
       <LearnedCard data={summary.data} loading={summary.isLoading} />
 
       {report.data && <SelfGradeCard c={report.data.selfGrade} />}
+      <TimeOfDayCard />
       <ProjectionRecordCard />
       {report.data && <HealthCard r={report.data} />}
     </div>
@@ -285,6 +288,73 @@ function StockCoverageLine({ c, thresholds: t }: { c: StockCoverage; thresholds:
       </ul>
       {c.issues.length > 0 && <p className="mt-2 text-bearish">{c.issues.map((i) => i.text).join(' · ')}</p>}
     </div>
+  );
+}
+
+/**
+ * Time-of-day learning: how many names have a daily clock of their own, how the
+ * kinds of day differ across all names, and what has followed spike alerts.
+ */
+function TimeOfDayCard(): JSX.Element | null {
+  const q = useQuery({
+    queryKey: ['learning-intraday'],
+    queryFn: () => getJson<IntradayLearningResponse>('/api/learning/intraday'),
+    refetchInterval: 300_000,
+  });
+  if (q.isLoading) return <Skeleton className="h-40 w-full" />;
+  if (q.isError || !q.data) return null;
+  const { clock, spikes } = q.data;
+  const firstHour = (k: 'regular' | 'expiry' | 'earnings'): number => clock.all[0]![k] + clock.all[1]![k];
+  const lastHour = (k: 'regular' | 'expiry' | 'earnings'): number => clock.all[11]![k] + clock.all[12]![k];
+  const learnedRows = spikes.table.rows.some((r) => Object.values(r.cells).some((c) => c.rate !== null));
+  return (
+    <Card>
+      <CardHeader
+        title="Time of day"
+        right={<span className="text-[10px] tnum text-slate-500">{clock.asOf ? `clocks through ${clock.asOf}` : 'no sessions folded in yet'}</span>}
+      />
+      <div className="space-y-4 p-4">
+        <p className="text-[11px] leading-relaxed text-slate-500">
+          Two things are learned from the 5-minute data before it is thinned: each stock&apos;s <Term k="dailyClock">daily clock</Term> — when in the
+          session it normally trades, which is what &ldquo;unusual volume&rdquo; is judged against — and what the price has done after spike alerts,
+          by time of day.
+        </p>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <Tile label="Stocks with own sessions" value={`${clock.withOwnData} / ${clock.names}`} sub="the rest use their sector's clock" />
+          <Tile
+            label="Mostly their own clock"
+            value={String(clock.mostlyOwn)}
+            sub={`${clock.params.stockPrior}+ sessions on record; the most any stock has is ${clock.maxSessions}`}
+          />
+          <Tile label="Spike alerts graded" value={String(spikes.episodes)} sub={`${spikes.pending} waiting for a session to settle`} />
+          <Tile
+            label="First hour, all stocks"
+            value={pct(firstHour('regular'))}
+            sub={clock.learned ? `expiry days ${pct(firstHour('expiry'))} · earnings days ${pct(firstHour('earnings'))}` : 'the starting curve, until sessions are folded in'}
+          />
+        </div>
+        {clock.learned && (
+          <p className="text-[11px] text-slate-400">
+            Across all stocks the last hour carries {pct(lastHour('regular'))} of a regular day&apos;s option volume, {pct(lastHour('expiry'))} on a
+            weekly-expiry day and {pct(lastHour('earnings'))} on an earnings day. Each stock&apos;s own clock is on its page, under Time of day.
+          </p>
+        )}
+        <div>
+          <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">
+            After a spike alert — all stocks: how often the price kept going the spike&apos;s way (<Term k="followThrough">follow-through</Term>, vs
+            SPY)
+          </p>
+          {learnedRows ? (
+            <SpikeTableView table={spikes.table} label="all stocks" />
+          ) : (
+            <p className="rounded border border-surface-border px-3 py-4 text-xs text-slate-400">
+              Still learning: {spikes.episodes} spike alert{spikes.episodes === 1 ? '' : 's'} graded so far. A row fills in once {spikes.minRoot}{' '}
+              alerts of that kind (time of day × lean) have been graded.
+            </p>
+          )}
+        </div>
+      </div>
+    </Card>
   );
 }
 

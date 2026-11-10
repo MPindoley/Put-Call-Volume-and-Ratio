@@ -37,10 +37,12 @@ import { classifyOiFlow, defaultInstrument, sideIvChanges, type InstrumentConfig
 import { apiStats } from './data-source';
 import type { OptionsChainAggregate } from './provider';
 import { aggregateRatio, percentileRank, putCallRatio, sectorRatios } from './ratio-calculator';
-import { SpikeDetector } from './spike-detector';
-import { etDateKey, isTradingDayNow } from './trading-calendar';
+import { shapeTotals, type ClockBook } from './intraday-profile';
+import { SpikeDetector, type ClockShapes } from './spike-detector';
+import { followThroughNote, leanOf, type SpikeBook } from './spike-outcomes';
+import { etDateKey, etTimeParts, isTradingDayNow, sessionBounds } from './trading-calendar';
 import { sectorOf } from './universe';
-import { isMarketHours } from './utils';
+import { isMarketHours, minutesSinceOpen } from './utils';
 
 const SPARKLINE_POINTS = 30; // 1-min resolution, 30 minutes
 const MAX_ALERTS = 200;
@@ -127,6 +129,12 @@ export class FlowEngine {
   readonly convictions = new Map<string, TickerConviction>();
   /** Shares outstanding by symbol (market-cap.ts), stamped onto rows as they arrive. */
   readonly shares = new Map<string, number>();
+  /** Every name's learned daily clock (intraday-jobs.ts); null until one is loaded. */
+  clocks: ClockBook | null = null;
+  /** Latest session folded into the clocks (YYYY-MM-DD). */
+  clocksAsOf: string | null = null;
+  /** What has followed past spike alerts, by time of day (spike-outcome-jobs.ts); null until loaded. */
+  spikeBook: SpikeBook | null = null;
   /**
    * Per-ticker market-implied projection from the latest chain (projection.ts).
    * Served to the ticker page only — never broadcast with the table rows.
@@ -378,9 +386,38 @@ export class FlowEngine {
             contracts: putVolume + callVolume,
             putCallRatio: Number(ratio.toFixed(3)),
             createdAt: now,
+            followThrough: this.followThroughFor(agg.symbol, ratio, now),
           }
         : null;
     return { fields, alert };
+  }
+
+  /** What past spikes like this one were followed by, when enough are graded (spike-outcomes.ts). */
+  private followThroughFor(symbol: string, ratio: number, now: number): SpikeAlert['followThrough'] {
+    if (!this.spikeBook) return null;
+    const at = new Date(now);
+    const sector = sectorOf(symbol);
+    const closeMin = sessionBounds(etTimeParts(at).dateKey)?.closeMin ?? 390;
+    return followThroughNote(this.spikeBook, { symbol, sector, isEtf: sector === 'ETF' }, minutesSinceOpen(at), leanOf(ratio), closeMin);
+  }
+
+  /**
+   * Replace the learned daily clocks (intraday-jobs.ts): the spike detector
+   * then judges each name's volume against its own profile for the kind of day
+   * it is. `earningsSessions` are the ET dates each name reacts to earnings on.
+   */
+  setClocks(book: ClockBook, earningsSessions: ReadonlyMap<string, ReadonlySet<string>>, asOf: string | null): void {
+    this.clocks = book;
+    this.clocksAsOf = asOf;
+    const shapes = new Map<string, ClockShapes>();
+    for (const [symbol, c] of book.stocks) {
+      shapes.set(symbol, {
+        regular: shapeTotals(c.shapes.regular),
+        expiry: shapeTotals(c.shapes.expiry),
+        earnings: shapeTotals(c.shapes.earnings),
+      });
+    }
+    this.detector.setClocks(shapes, earningsSessions);
   }
 
   /** Recompute aggregate + sector ratios; call once per completed poll cycle. */

@@ -236,3 +236,54 @@ export function tradingDaysBetween(from: Date, to: Date): number {
   }
   return count;
 }
+
+// ─── Session dates as ISO keys (YYYY-MM-DD, the ET calendar date) ─────────────
+
+function ymd(iso: string): { year: number; month: number; day: number } {
+  const [year, month, day] = iso.split('-').map(Number) as [number, number, number];
+  return { year, month, day };
+}
+
+/** An ET calendar date moved by a number of calendar days. */
+export function shiftIso(iso: string, days: number): string {
+  const { year, month, day } = ymd(iso);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+/** True when the ET calendar date is a trading session. */
+export function isSessionDate(iso: string): boolean {
+  const { year, month, day } = ymd(iso);
+  return isTradingDay(year, month, day);
+}
+
+/** The first trading session strictly after an ET calendar date. */
+export function nextSessionDate(iso: string): string {
+  let d = shiftIso(iso, 1);
+  while (!isSessionDate(d)) d = shiftIso(d, 1);
+  return d;
+}
+
+/**
+ * The last session of its Monday–Friday week: the day weekly options expire
+ * (Friday, or Thursday when Friday is a holiday). False on non-trading days.
+ */
+export function isLastSessionOfWeek(iso: string): boolean {
+  if (!isSessionDate(iso)) return false;
+  const { year, month, day } = ymd(iso);
+  const weekday = dow(year, month, day); // 1=Mon … 5=Fri on a session date
+  for (let ahead = 1; weekday + ahead <= 5; ahead++) if (isSessionDate(shiftIso(iso, ahead))) return false;
+  return true;
+}
+
+/** Open (9:30 ET) and close (16:00, or 13:00 on a half day) of a session, epoch ms; null on a non-trading day. */
+export function sessionBounds(iso: string): { openMs: number; closeMs: number; closeMin: number; earlyClose: boolean } | null {
+  const { year, month, day } = ymd(iso);
+  const close = closeMinutesEt(year, month, day);
+  if (close === null) return null;
+  return {
+    openMs: etWallTimeToEpoch(year, month, day, 9 * 60 + 30),
+    closeMs: etWallTimeToEpoch(year, month, day, close),
+    closeMin: close - (9 * 60 + 30),
+    earlyClose: close !== REGULAR_CLOSE_ET_MIN,
+  };
+}

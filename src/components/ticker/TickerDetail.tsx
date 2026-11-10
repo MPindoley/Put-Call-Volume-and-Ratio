@@ -19,6 +19,7 @@ import { formatMarketCap, marketCapOf } from '@/lib/market-cap';
 import type { Projection } from '@/lib/projection';
 import type { CalibrationView, HorizonKey } from '@/lib/projection-history';
 import { ProjectionCard, type ProjectionCoverage } from './ProjectionCard';
+import { IntradayCards } from './IntradayCards';
 import { RelationshipsCard } from './RelationshipsCard';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
 import type { TrackRecord } from '@/lib/learning-data';
@@ -60,6 +61,7 @@ function sectionsFor(data: DetailResponse | undefined): SectionDef[] {
   if (data.trackRecord) out.push({ id: 'track-record', label: 'Track record' });
   if (flow.eventGauge) out.push({ id: 'event', label: 'Event move' });
   if (flow.idiosyncraticMoves && flow.idiosyncraticMoves.length > 0) out.push({ id: 'idiosyncratic', label: 'Idiosyncratic' });
+  out.push({ id: 'time-of-day', label: 'Time of day' });
   out.push({ id: 'relationships', label: 'Relationships' });
   out.push({ id: 'history', label: 'History' });
   return out;
@@ -957,6 +959,12 @@ function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
             <IdiosyncraticCard flow={flow} />
           </Section>
         )}
+      </div>
+
+      <div className="min-w-0 xl:col-span-12">
+        <Section id="time-of-day">
+          <IntradayCards symbol={flow.symbol} />
+        </Section>
       </div>
 
       <div className="min-w-0 xl:col-span-12">

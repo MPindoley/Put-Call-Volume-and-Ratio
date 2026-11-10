@@ -47,8 +47,27 @@ export const GLOSSARY = {
   volVsExpected: {
     term: 'Volume vs expected',
     what: "Today's option volume so far divided by what is normal for this name by this time of day.",
-    how: '20-day average daily volume × the share of a day usually traded by now (intraday shape).',
+    how: "20-day average daily volume × the share of a day this name has usually traded by now — its own learned daily clock for the kind of day it is (regular, weekly-expiry or earnings).",
     read: '1.0× = normal; 3× or more is unusual activity.',
+  },
+  dailyClock: {
+    term: 'Daily clock',
+    what: "The share of a day's option volume this name normally trades in each half hour, learned from its own sessions.",
+    how: 'Each finished session is cut into 13 half-hour buckets and folded into a running average that favours recent sessions. A name with few sessions on record leans on its sector; weekly-expiry and earnings days have their own clock.',
+    read: 'A tall bar is a normally busy half hour for this name. The session bars beside them show where the latest session ran above or below its usual pattern.',
+    caveat: 'Quiet names are refreshed less often, which smooths their half hours a little.',
+  },
+  normalDayShare: {
+    term: '% of a normal day',
+    what: "Contracts traded in the half hour, as a percentage of this name's 20-day average daily volume.",
+    read: 'The usual bars add up to 100%. Session bars add up to more on a busy day and less on a quiet one.',
+  },
+  followThrough: {
+    term: 'Follow-through',
+    what: 'How often the price kept moving the way a spike alert leaned: up after a call-heavy spike, down after a put-heavy one.',
+    how: "Measured from the moment the alert appeared, against SPY's move over the same window (ETFs: their own move). Each figure is pulled toward the level above it — name → sector → all stocks → 50% — in proportion to how few spikes it rests on.",
+    read: '50% is a coin flip. Above it, spikes of that kind have tended to keep going; below it, to fade.',
+    caveat: 'Volume shows activity, not who initiated it, and the free feed is 15 minutes delayed — the windows start when the alert reached you, not when the trades happened.',
   },
   chainPrice: {
     term: 'Chain price',
