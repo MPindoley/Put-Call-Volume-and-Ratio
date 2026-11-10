@@ -101,6 +101,17 @@ export interface CalibrationView {
   tickerWeight: number;
   /** Enough history (sector or stock) for the adjusted range to mean anything. */
   usable: boolean;
+  /**
+   * `ratio` for the conditions the stock is in as of the latest session
+   * (market stress, its own IV level, earnings inside the window). Absent
+   * until the job has attached it.
+   */
+  conditional?: ConditionalRatio | null;
+}
+
+/** The ratio to adjust a range with: the conditional one when it exists. */
+export function ratioInForce(v: CalibrationView): number {
+  return v.conditional?.ratio ?? v.ratio;
 }
 
 /**
@@ -121,6 +132,176 @@ export function calibrationView(ticker: CalibrationStats, sector: CalibrationSta
     tickerWeight: round(wt, 4),
     usable: ticker.periods >= MIN_PERIODS || sector.periods >= MIN_PERIODS,
   };
+}
+
+// ── Conditions: when moves run bigger or smaller than usual ───────────────────
+
+/**
+ * The plain ratio is an average over every kind of period. Three things known
+ * at the start of a window change how large the move in it tends to be,
+ * relative to what was priced:
+ *
+ *   vol      — the market's volatility regime that day: calm or stressed
+ *   iv       — the stock's own IV against its recent median: high or low
+ *   earnings — whether the stock reports inside the window
+ *
+ * For each condition, a FACTOR: realized ÷ implied in that state, over
+ * realized ÷ implied across both states (1.15 = moves run 15% bigger than this
+ * pool's usual when the state holds). Factors are learned on pools — all names,
+ * then each sector, shrunk toward the all-names factor, itself shrunk toward 1
+ * — because one stock has far too few independent periods in each state. A
+ * stock's ratio for today is its blended ratio × the factors of the states it
+ * is in now. The three are treated as independent (a main-effects
+ * approximation): the joint cells are much too thin to estimate.
+ *
+ * Evidence is counted in independent periods of the STATE (its distinct start
+ * dates ÷ horizon), so a monthly factor for stressed markets stays near 1
+ * until several stressed months have been seen.
+ */
+export const CONDITIONS = ['vol', 'iv', 'earnings'] as const;
+export type Condition = (typeof CONDITIONS)[number];
+/** The two states of each condition; index 1 is the one that usually means bigger moves. */
+export const CONDITION_STATES = { vol: ['calm', 'stressed'], iv: ['low', 'high'], earnings: ['none', 'inside'] } as const;
+export type ConditionState = { vol: 'calm' | 'stressed' | null; iv: 'low' | 'high' | null; earnings: 'none' | 'inside' | null };
+
+/** Independent periods of a state at which its factor carries half the weight. */
+export const CONDITION_SHRINK_K = 8;
+/** A factor is never taken to move a ratio by more than this either way. */
+const FACTOR_BOUNDS: [number, number] = [0.6, 1.8];
+/** Prior sessions of IV needed to call a day's IV high or low, and how far back the median looks. */
+export const IV_STATE_MIN_OBS = 20;
+export const IV_STATE_LOOKBACK = 120;
+
+export interface ConditionedMove {
+  session: number;
+  z: number;
+  state: ConditionState;
+}
+
+/** High or low against the median of the stock's own previous IVs (point-in-time); null with too few. */
+export function ivState(prior: readonly number[], iv: number | null): 'low' | 'high' | null {
+  if (iv === null || !(iv > 0) || prior.length < IV_STATE_MIN_OBS) return null;
+  const sorted = [...prior].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  const median = sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+  return iv > median ? 'high' : 'low';
+}
+
+/**
+ * Standardized moves with the conditions in force at each window's start.
+ * `volBySession` is the market's regime per session; `earningsSessions` the
+ * sessions this stock traded an earnings report on.
+ */
+export function conditionedMoves(
+  series: readonly DayPoint[],
+  horizon: HorizonKey,
+  volBySession: ReadonlyMap<number, 'calm' | 'stressed'>,
+  earningsSessions: ReadonlySet<number>,
+): ConditionedMove[] {
+  const h = HORIZONS[horizon].sessions;
+  const ivs: number[] = [];
+  const ivAt = new Map<number, 'low' | 'high' | null>();
+  for (const p of [...series].sort((a, b) => a.session - b.session)) {
+    ivAt.set(p.session, ivState(ivs.slice(-IV_STATE_LOOKBACK), p.iv30));
+    if (p.iv30 !== null && p.iv30 > 0) ivs.push(p.iv30);
+  }
+  return standardizedMoves(series, horizon).map((m) => {
+    let inside = false;
+    for (let s = m.session + 1; s <= m.session + h && !inside; s++) inside = earningsSessions.has(s);
+    return {
+      ...m,
+      state: { vol: volBySession.get(m.session) ?? null, iv: ivAt.get(m.session) ?? null, earnings: inside ? 'inside' : 'none' },
+    };
+  });
+}
+
+/** Running sums for one pool: per condition and state, Σz², observations and the distinct start sessions. */
+export interface ConditionTally {
+  sum: Record<Condition, [number, number]>;
+  n: Record<Condition, [number, number]>;
+  sessions: Record<Condition, [Set<number>, Set<number>]>;
+}
+
+export function emptyTally(): ConditionTally {
+  const pair = <T>(make: () => T): Record<Condition, [T, T]> => ({
+    vol: [make(), make()],
+    iv: [make(), make()],
+    earnings: [make(), make()],
+  });
+  return { sum: pair(() => 0), n: pair(() => 0), sessions: pair(() => new Set<number>()) };
+}
+
+export function addToTally(t: ConditionTally, moves: readonly ConditionedMove[]): void {
+  for (const m of moves) {
+    for (const c of CONDITIONS) {
+      const state = m.state[c];
+      if (state === null) continue;
+      const i = (CONDITION_STATES[c] as readonly string[]).indexOf(state);
+      t.sum[c][i as 0 | 1] += m.z * m.z;
+      t.n[c][i as 0 | 1] += 1;
+      t.sessions[c][i as 0 | 1].add(m.session);
+    }
+  }
+}
+
+export interface ConditionFactor {
+  /** Realized ÷ implied in this state over the pool's usual, straight from the data; null without data in both states. */
+  raw: number | null;
+  /** Independent periods of this state behind it. */
+  periods: number;
+  /** The factor used: raw, shrunk toward the level above. */
+  factor: number;
+}
+export type ConditionFactors = Record<Condition, [ConditionFactor, ConditionFactor]>;
+
+/**
+ * A pool's factors, shrunk toward `parent` (the all-names factors for a
+ * sector; nothing — i.e. 1 — for all names).
+ */
+export function conditionFactors(
+  t: ConditionTally,
+  horizon: HorizonKey,
+  parent?: ConditionFactors,
+  k = CONDITION_SHRINK_K,
+): ConditionFactors {
+  const h = HORIZONS[horizon].sessions;
+  const out = {} as ConditionFactors;
+  for (const c of CONDITIONS) {
+    const total = t.n[c][0] + t.n[c][1];
+    const overall = total > 0 ? (t.sum[c][0] + t.sum[c][1]) / total : 0;
+    out[c] = [0, 1].map((i) => {
+      const n = t.n[c][i as 0 | 1];
+      const periods = Math.floor(t.sessions[c][i as 0 | 1].size / h);
+      const other = t.n[c][(1 - i) as 0 | 1];
+      const raw = n > 0 && other > 0 && overall > 0 ? Math.sqrt(t.sum[c][i as 0 | 1] / n / overall) : null;
+      const prior = parent?.[c][i as 0 | 1].factor ?? 1;
+      const w = raw === null ? 0 : periods / (periods + k);
+      const factor = Math.min(FACTOR_BOUNDS[1], Math.max(FACTOR_BOUNDS[0], prior + w * ((raw ?? prior) - prior)));
+      return { raw: raw === null ? null : round(raw, 4), periods, factor: round(factor, 4) };
+    }) as [ConditionFactor, ConditionFactor];
+  }
+  return out;
+}
+
+export interface ConditionalRatio {
+  /** The blended ratio × the factors of the states in force. */
+  ratio: number;
+  /** The factors applied, one per condition whose state is known. */
+  applied: { condition: Condition; state: string; factor: number; periods: number }[];
+}
+
+/** A stock's ratio for the conditions it is in now, from its blended ratio and its sector's factors. */
+export function conditionalRatio(baseRatio: number, factors: ConditionFactors, state: ConditionState): ConditionalRatio {
+  const applied: ConditionalRatio['applied'] = [];
+  let ratio = baseRatio;
+  for (const c of CONDITIONS) {
+    const s = state[c];
+    if (s === null) continue;
+    const f = factors[c][(CONDITION_STATES[c] as readonly string[]).indexOf(s) as 0 | 1];
+    ratio *= f.factor;
+    applied.push({ condition: c, state: s, factor: f.factor, periods: f.periods });
+  }
+  return { ratio: round(ratio, 4), applied };
 }
 
 // ── Coverage of logged projections ────────────────────────────────────────────

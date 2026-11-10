@@ -29,6 +29,8 @@ function weekdays(n: number, start = Date.UTC(2026, 2, 2)): Date[] {
 async function wipe(): Promise<void> {
   await db.projectionLog.deleteMany({});
   await db.dailyMetric.deleteMany({});
+  await db.dailyRegime.deleteMany({});
+  await db.earningsEvent.deleteMany({ where: { symbol: { in: ['AAPL', 'MSFT'] } } });
   await db.ticker.createMany({
     data: [
       { symbol: 'SPY', sector: 'ETF' },
@@ -137,5 +139,40 @@ describe.skipIf(!RUN)('projection jobs (RUN_DB_TESTS=1)', () => {
     expect(aapl?.month.ratio).toBeGreaterThan(0);
     expect(engine.projectionCoverage?.all.month.n).toBe(1);
     expect(engine.projectionCoverage?.all.month.inside68).toBe(1);
+  });
+
+  it('learns how conditions scale moves, and applies the ones each stock is in now', async () => {
+    // 80 sessions: calm for 40, then stressed — and the stressed half moves three times as much.
+    const days = weekdays(80, Math.floor(Date.now() / DAY) * DAY - 140 * DAY);
+    const metrics = [];
+    for (const [symbol, phase] of [['SPY', 0], ['AAPL', 1], ['MSFT', 2]] as const) {
+      let close = 100;
+      for (let i = 0; i < days.length; i++) {
+        metrics.push({ symbol, date: days[i]!, close, iv30: i < 79 ? 25 : 40, final: true });
+        close *= Math.exp((i < 40 ? 0.004 : 0.012) * Math.sin(i * 1.7 + phase));
+      }
+    }
+    await db.dailyMetric.createMany({ data: metrics });
+    await db.dailyRegime.createMany({
+      data: days.map((date, i) => ({ date, volState: i < 40 ? 'pos' : 'neg', trendState: 'pos', regimeConfigVersion: 'zz', final: true })),
+    });
+    // MSFT reports the session after the latest one; AAPL has nothing on the calendar.
+    const next = new Date(days[79]!.getTime() + (days[79]!.getUTCDay() === 5 ? 3 : 1) * DAY);
+    await db.earningsEvent.create({ data: { symbol: 'MSFT', date: next, source: 'manual', confirmed: true, reportTiming: 'bmo' } });
+
+    const engine = new FlowEngine();
+    await refreshProjectionHistory(engine);
+    const vol = engine.conditionFactors!.week.vol;
+    expect(vol[1].raw).toBeGreaterThan(1.2); // stressed
+    expect(vol[0].raw).toBeLessThan(0.8); // calm
+    expect(vol[1].factor).toBeGreaterThan(1);
+    expect(vol[1].factor).toBeLessThan(vol[1].raw!); // seven-odd independent stressed weeks: only part of the way
+
+    const aapl = engine.calibrations.get('AAPL')!.week;
+    expect(aapl.conditional?.applied.map((a) => `${a.condition}:${a.state}`)).toEqual(['vol:stressed', 'iv:high', 'earnings:none']);
+    expect(aapl.conditional!.ratio).toBeCloseTo(aapl.ratio * aapl.conditional!.applied.reduce((p, a) => p * a.factor, 1), 3);
+    expect(aapl.conditional!.ratio).toBeGreaterThan(aapl.ratio); // the market is stressed now
+    const msft = engine.calibrations.get('MSFT')!.week;
+    expect(msft.conditional?.applied.find((a) => a.condition === 'earnings')?.state).toBe('inside');
   });
 });

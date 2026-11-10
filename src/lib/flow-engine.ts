@@ -30,7 +30,7 @@ import type {
 import { DEFAULT_SETTINGS } from '@/types';
 import { computeChainAnalytics } from './chain-analytics';
 import { computeProjection, type Projection } from './projection';
-import type { CalibrationView, Coverage, HorizonKey } from './projection-history';
+import type { CalibrationView, ConditionFactors, Coverage, HorizonKey } from './projection-history';
 import { MIN_COVERAGE_MS, pruneIntervals, windowFlow, type FlowInterval } from './flow-window';
 import { buildEventGauge, type EventGaugeInput } from './event-analytics';
 import { classifyOiFlow, defaultInstrument, sideIvChanges, type InstrumentConfig } from './interpretation';
@@ -142,6 +142,8 @@ export class FlowEngine {
   readonly projections = new Map<string, Projection>();
   /** Per-ticker realized-vs-implied calibration by horizon, refreshed nightly (projection-jobs.ts). */
   readonly calibrations = new Map<string, Record<HorizonKey, CalibrationView>>();
+  /** How conditions (market stress, IV level, earnings) scale realized ÷ implied across all names, refreshed nightly. */
+  conditionFactors: Record<HorizonKey, ConditionFactors> | null = null;
   /** Graded-projection coverage across all names and per sector, refreshed nightly. */
   projectionCoverage: { all: Record<HorizonKey, Coverage>; bySector: Map<string, Record<HorizonKey, Coverage>> } | null = null;
   marketContext: MarketContext | null = null;

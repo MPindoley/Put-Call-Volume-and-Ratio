@@ -301,7 +301,14 @@ export const GLOSSARY = {
   adjustedRange: {
     term: 'History-adjusted range',
     what: 'The implied range rescaled by how real moves have compared with implied ones for this stock and sector.',
-    how: 'Each bound\'s distance from the forward (in log terms) × the realized ÷ implied ratio.',
+    how: 'Each bound\'s distance from the forward (in log terms) × the realized ÷ implied ratio, scaled for the conditions in force (market stress, the stock\'s IV level, earnings inside the window).',
+  },
+  conditionFactor: {
+    term: 'Condition factor',
+    what: 'How much bigger or smaller real moves have run, against what options priced, when a condition held at the start of the window.',
+    how: "Realized ÷ implied in that state over realized ÷ implied overall, learned across all names and each sector for three conditions: the market's volatility regime (calm or stressed), the stock's IV against its own recent median (high or low), and whether it reports earnings inside the window. Pulled toward 1.00× until enough independent periods of the state exist.",
+    read: 'Above 1 = expect a wider range than this stock\'s usual in conditions like these; below 1 = narrower.',
+    caveat: 'The three are applied as if independent, and a monthly factor needs months of that condition before it moves.',
   },
   coverage: {
     term: 'Projection track record',

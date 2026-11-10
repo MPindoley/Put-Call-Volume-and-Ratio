@@ -14,7 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import type { Calibration, SignalSummary } from '@/lib/learning';
 import type { CoverageReport, Stage, StageStatus, StockCoverage } from '@/lib/learning-coverage';
 import type { LearningReport } from '@/lib/learning-jobs';
-import type { Coverage, HorizonKey } from '@/lib/projection-history';
+import type { Condition, ConditionFactors, Coverage, HorizonKey } from '@/lib/projection-history';
 import { Term } from '@/components/ui/term';
 import { SpikeTableView } from '@/components/ticker/IntradayCards';
 import type { IntradayLearningResponse } from '@/app/api/learning/intraday/route';
@@ -667,6 +667,64 @@ function HealthCard({ r }: { r: LearningReport }): JSX.Element {
 interface ProjectionCoverageResponse {
   all: Record<HorizonKey, Coverage> | null;
   bySector: Record<string, Record<HorizonKey, Coverage>>;
+  /** How conditions scale real moves against priced ones, all names (projection-history.ts); null until computed. */
+  conditions: Record<HorizonKey, ConditionFactors> | null;
+}
+
+const CONDITION_ROWS: { condition: Condition; index: 0 | 1; label: string }[] = [
+  { condition: 'vol', index: 1, label: 'Market stressed' },
+  { condition: 'vol', index: 0, label: 'Market calm' },
+  { condition: 'iv', index: 1, label: "Stock's IV above its usual" },
+  { condition: 'iv', index: 0, label: "Stock's IV below its usual" },
+  { condition: 'earnings', index: 1, label: 'Earnings inside the window' },
+  { condition: 'earnings', index: 0, label: 'No earnings inside' },
+];
+
+/** When real moves run bigger or smaller than usual against what options priced, across all names. */
+function ConditionsTable({ c }: { c: Record<HorizonKey, ConditionFactors> }): JSX.Element {
+  const cell = (f: ConditionFactors[Condition][0]): JSX.Element => (
+    <>
+      <td className={cn('py-1 text-right', Math.abs(f.factor - 1) >= 0.05 ? 'font-semibold text-slate-100' : 'text-slate-400')}>
+        {f.factor.toFixed(2)}×
+      </td>
+      <td className="py-1 text-right text-slate-500">{f.raw === null ? '—' : `${f.raw.toFixed(2)}×`}</td>
+      <td className="py-1 text-right text-slate-500">{f.periods}</td>
+    </>
+  );
+  return (
+    <div className="overflow-x-auto border-t border-surface-border p-4">
+      <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">
+        How big the move — <Term k="conditionFactor">by condition</Term>, all names
+      </p>
+      <table className="w-full min-w-[560px] text-xs tnum">
+        <thead className="text-left text-[10px] uppercase tracking-wider text-slate-500">
+          <tr>
+            <th className="py-1 font-normal">At the start of the window</th>
+            <th className="py-1 text-right font-normal">~1 week: used</th>
+            <th className="py-1 text-right font-normal">raw</th>
+            <th className="py-1 text-right font-normal">periods</th>
+            <th className="py-1 text-right font-normal">~1 month: used</th>
+            <th className="py-1 text-right font-normal">raw</th>
+            <th className="py-1 text-right font-normal">periods</th>
+          </tr>
+        </thead>
+        <tbody>
+          {CONDITION_ROWS.map((r) => (
+            <tr key={r.label} className="border-t border-surface-border/50 text-slate-300">
+              <td className="py-1">{r.label}</td>
+              {cell(c.week[r.condition][r.index])}
+              {cell(c.month[r.condition][r.index])}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+        1.15× means real moves ran 15% bigger than usual, against what options priced, when that condition held at the start. &ldquo;Raw&rdquo;
+        is straight from the data; &ldquo;used&rdquo; is pulled toward 1.00× until enough independent periods of that condition have been seen.
+        Each stock&apos;s projected range is scaled by the conditions it is in.
+      </p>
+    </div>
+  );
 }
 
 /**
@@ -740,6 +798,7 @@ function ProjectionRecordCard(): JSX.Element {
           </p>
         </div>
       )}
+      {q.data?.conditions && <ConditionsTable c={q.data.conditions} />}
     </Card>
   );
 }

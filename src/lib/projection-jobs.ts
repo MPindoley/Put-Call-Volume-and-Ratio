@@ -15,19 +15,31 @@
 import { tryDb } from './db';
 import type { FlowEngine } from './flow-engine';
 import { PROJECTION_METHOD_VERSION, type ExpiryProjection } from './projection';
+import { earningsSessions } from './intraday-jobs';
 import {
+  addToTally,
   calibrationStats,
   calibrationView,
+  conditionalRatio,
+  conditionedMoves,
+  conditionFactors,
   coverage,
+  emptyTally,
   HORIZONS,
-  standardizedMoves,
+  IV_STATE_LOOKBACK,
+  ivState,
+  ratioInForce,
   type CalibrationView,
+  type ConditionedMove,
+  type ConditionFactors,
+  type ConditionState,
+  type ConditionTally,
   type Coverage,
   type DayPoint,
   type HorizonKey,
   type LoggedProjection,
 } from './projection-history';
-import { etDateKey } from './trading-calendar';
+import { etDateKey, shiftIso, tradingDaysBetween } from './trading-calendar';
 import { sectorOf } from './universe';
 
 const DAY_MS = 86_400_000;
@@ -84,7 +96,8 @@ export async function logProjections(engine: FlowEngine, now = new Date()): Prom
           q50: q50 as number,
           q84: q84 as number,
           q975: q975 as number,
-          calRatio: cal?.usable ? cal.ratio : null,
+          // The ratio the adjusted range was shown with — for the conditions in force — so grading tests that.
+          calRatio: cal?.usable ? ratioInForce(cal) : null,
         });
       }
     }
@@ -176,8 +189,31 @@ export async function refreshProjectionHistory(engine: FlowEngine): Promise<void
         await db.dailyMetric.groupBy({ by: ['symbol'], where: { final: true, seeded: false, iv30: { not: null }, date: { gte: first.date } } })
       ).map((r) => r.symbol);
 
-      const perTicker = new Map<string, Record<HorizonKey, { session: number; z: number }[]>>();
-      const perSector = new Map<string, Record<HorizonKey, { session: number; z: number }[]>>();
+      // What was true at each window's start: the market's volatility regime
+      // that session, and the sessions each name traded an earnings report on.
+      const iso = (d: Date): string => d.toISOString().slice(0, 10);
+      const lastDate = dates[dates.length - 1]!.date;
+      const regimes = await db.dailyRegime.findMany({
+        where: { final: true, seeded: false, date: { gte: first.date } },
+        orderBy: { date: 'asc' },
+        select: { date: true, volState: true },
+      });
+      const volOf = (state: string): 'calm' | 'stressed' => (state === 'neg' ? 'stressed' : 'calm');
+      const volBySession = new Map<number, 'calm' | 'stressed'>();
+      for (const r of regimes) {
+        const session = sessionOf.get(r.date.getTime());
+        if (session !== undefined) volBySession.set(session, volOf(r.volState));
+      }
+      const volNow = regimes.length > 0 ? volOf(regimes[regimes.length - 1]!.volState) : null;
+      // Through the longest window after the latest session, for "does it report inside the window now?".
+      const earnings = await earningsSessions(db, iso(first.date), shiftIso(iso(lastDate), 45));
+      const lastNoon = new Date(`${iso(lastDate)}T12:00:00Z`);
+
+      const perTicker = new Map<string, Record<HorizonKey, ConditionedMove[]>>();
+      const perSector = new Map<string, Record<HorizonKey, ConditionedMove[]>>();
+      const nowBySymbol = new Map<string, { iv: ConditionState['iv']; reportsIn: number | null }>();
+      const allTally: Record<HorizonKey, ConditionTally> = { week: emptyTally(), month: emptyTally() };
+      const sectorTally = new Map<string, Record<HorizonKey, ConditionTally>>();
       for (let i = 0; i < symbols.length; i += BATCH) {
         const batch = symbols.slice(i, i + BATCH);
         const rows = await db.dailyMetric.findMany({
@@ -192,25 +228,71 @@ export async function refreshProjectionHistory(engine: FlowEngine): Promise<void
           series.set(r.symbol, [...(series.get(r.symbol) ?? []), { session, close: r.close, iv30: r.iv30 }]);
         }
         for (const [symbol, pts] of series) {
-          const moves = { week: standardizedMoves(pts, 'week'), month: standardizedMoves(pts, 'month') };
+          const reported = new Set<number>();
+          let reportsIn: number | null = null; // sessions until its next report, when one is on the calendar
+          for (const day of earnings.get(symbol) ?? []) {
+            const session = sessionOf.get(Date.parse(`${day}T00:00:00Z`));
+            if (session !== undefined) reported.add(session);
+            const ahead = tradingDaysBetween(lastNoon, new Date(`${day}T12:00:00Z`));
+            if (ahead > 0 && (reportsIn === null || ahead < reportsIn)) reportsIn = ahead;
+          }
+          const moves = {
+            week: conditionedMoves(pts, 'week', volBySession, reported),
+            month: conditionedMoves(pts, 'month', volBySession, reported),
+          };
           perTicker.set(symbol, moves);
           const sector = sectorOf(symbol);
           const pool = perSector.get(sector) ?? { week: [], month: [] };
-          for (const h of HORIZON_KEYS) pool[h].push(...moves[h]);
+          const tally = sectorTally.get(sector) ?? { week: emptyTally(), month: emptyTally() };
+          for (const h of HORIZON_KEYS) {
+            pool[h].push(...moves[h]);
+            addToTally(tally[h], moves[h]);
+            addToTally(allTally[h], moves[h]);
+          }
           perSector.set(sector, pool);
+          sectorTally.set(sector, tally);
+          // The stock's IV now against its own recent median (the latest session's, if it has an IV).
+          const ivs = pts.filter((p) => p.iv30 !== null && p.iv30 > 0);
+          const latest = ivs[ivs.length - 1];
+          nowBySymbol.set(symbol, {
+            iv: latest && latest.session === dates.length - 1 ? ivState(ivs.slice(0, -1).slice(-IV_STATE_LOOKBACK).map((p) => p.iv30 as number), latest.iv30) : null,
+            reportsIn,
+          });
         }
       }
       const sectorStats = new Map(
         [...perSector].map(([sector, m]) => [sector, { week: calibrationStats(m.week, 'week'), month: calibrationStats(m.month, 'month') }]),
       );
+      const allFactors: Record<HorizonKey, ConditionFactors> = {
+        week: conditionFactors(allTally.week, 'week'),
+        month: conditionFactors(allTally.month, 'month'),
+      };
+      const sectorFactors = new Map<string, Record<HorizonKey, ConditionFactors>>(
+        [...sectorTally].map(([sector, t]) => [
+          sector,
+          { week: conditionFactors(t.week, 'week', allFactors.week), month: conditionFactors(t.month, 'month', allFactors.month) },
+        ]),
+      );
       for (const [symbol, m] of perTicker) {
-        const sec = sectorStats.get(sectorOf(symbol));
-        if (!sec) continue;
-        calibrations.set(symbol, {
-          week: calibrationView(calibrationStats(m.week, 'week'), sec.week),
-          month: calibrationView(calibrationStats(m.month, 'month'), sec.month),
-        });
+        const sector = sectorOf(symbol);
+        const sec = sectorStats.get(sector);
+        const factors = sectorFactors.get(sector);
+        if (!sec || !factors) continue;
+        const now = nowBySymbol.get(symbol);
+        const view = (h: HorizonKey): CalibrationView => {
+          const v = calibrationView(calibrationStats(m[h], h), sec[h]);
+          if (!v.usable) return v;
+          const reports = now?.reportsIn ?? null;
+          const state: ConditionState = {
+            vol: volNow,
+            iv: now?.iv ?? null,
+            earnings: reports !== null && reports <= HORIZONS[h].sessions ? 'inside' : 'none',
+          };
+          return { ...v, conditional: conditionalRatio(v.ratio, factors[h], state) };
+        };
+        calibrations.set(symbol, { week: view('week'), month: view('month') });
       }
+      engine.conditionFactors = allFactors;
     }
     engine.calibrations.clear();
     for (const [symbol, v] of calibrations) engine.calibrations.set(symbol, v);

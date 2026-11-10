@@ -708,6 +708,32 @@ no edge, or pointing the wrong way.
 **If reversed:** a signal with a real edge at 5 sessions and none at 10 reads
 as "no edge", and nothing says how long to give a signal that has one.
 
+### 5.19 The size of the move depends on conditions (`projection-history.ts`)
+The realized ÷ implied ratio (§5.9) was one average per stock over every kind
+of period. Three things known at a window's start change how big the move in
+it runs against what was priced: the market's volatility regime (calm /
+stressed), the stock's IV against its own recent median (high / low, from its
+previous 20–120 sessions only), and whether it reports earnings inside the
+window. For each, a factor — realized ÷ implied in that state over the pool's
+usual — is learned on all names, then per sector, and the stock's blended
+ratio is multiplied by the factors of the states it is in as of the latest
+session. The adjusted range on the ticker page and the `calRatio` stored with
+each logged projection use that conditional ratio, so the existing
+projection grading (§5.10) tests it.
+
+- **Pooled, not per stock.** One stock has a handful of independent periods in
+  each state; a per-stock factor would be noise.
+- **Evidence = independent periods OF THE STATE** (its distinct start dates ÷
+  horizon). A thousand names on the same ten stressed sessions are two
+  stressed weeks, not a thousand observations. So monthly factors stay near 1
+  until months of each state exist; all names shrink toward 1, a sector
+  toward all names (prior 8 periods), and a factor is bounded to 0.6–1.8.
+- **Main effects only.** The three factors are multiplied as if independent;
+  the joint cells (stressed × high IV × earnings) are far too thin to estimate.
+
+**If reversed:** the same range multiplier is used the week a stock reports
+in a stressed market as in a quiet week with nothing on the calendar.
+
 ---
 
 ## 6. Cross-cutting invariants (the short list a reviewer should protect)
