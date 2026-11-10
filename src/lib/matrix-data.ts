@@ -217,6 +217,7 @@ export async function buildRegimeMatrixData(horizon: Horizon, basis: Basis): Pro
         putOI: true,
         callOI: true,
         spikeBaselineDays: true,
+        oiPcPct: true,
         final: true,
         historicalCloseOnly: true,
       },

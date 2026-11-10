@@ -40,6 +40,7 @@ const SIGNAL_NAMES: Record<string, string> = {
   skew_z: 'Skew z-score',
   divergence: 'Price / skew divergence',
   pc_extreme: 'OI put/call extreme',
+  pc_own: 'OI put/call vs own range',
   spike_alert: 'Volume spike',
 };
 const REGIME_NAMES: Record<string, string> = {

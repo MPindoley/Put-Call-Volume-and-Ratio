@@ -35,6 +35,7 @@ import { MIN_COVERAGE_MS, pruneIntervals, windowFlow, type FlowInterval } from '
 import { buildEventGauge, type EventGaugeInput } from './event-analytics';
 import { classifyOiFlow, defaultInstrument, sideIvChanges, type InstrumentConfig } from './interpretation';
 import { apiStats } from './data-source';
+import type { OwnRange } from './own-normal';
 import type { OptionsChainAggregate } from './provider';
 import { aggregateRatio, percentileRank, putCallRatio, sectorRatios } from './ratio-calculator';
 import { shapeTotals, type ClockBook } from './intraday-profile';
@@ -129,6 +130,8 @@ export class FlowEngine {
   readonly convictions = new Map<string, TickerConviction>();
   /** Shares outstanding by symbol (market-cap.ts), stamped onto rows as they arrive. */
   readonly shares = new Map<string, number>();
+  /** Each name's own usual OI put/call range (own-normal-jobs.ts), stamped onto rows as they arrive. */
+  readonly ownPc = new Map<string, OwnRange>();
   /** Every name's learned daily clock (intraday-jobs.ts); null until one is loaded. */
   clocks: ClockBook | null = null;
   /** Latest session folded into the clocks (YYYY-MM-DD). */
@@ -239,6 +242,7 @@ export class FlowEngine {
       sectorRelative: this.sectorRelatives.get(agg.symbol) ?? null,
       conviction: this.convictions.get(agg.symbol) ?? null,
       sharesOutstanding: this.shares.get(agg.symbol) ?? null,
+      ownPc: this.ownPc.get(agg.symbol) ?? null,
       eventGauge,
       idiosyncraticMoves: this.idiosyncraticMoves.get(agg.symbol) ?? [],
       lastUpdated: now,
@@ -504,6 +508,13 @@ export class FlowEngine {
       touched.push(state.flow);
     }
     return touched;
+  }
+
+  /** Replace every name's own usual OI put/call range and stamp it onto existing rows. */
+  setOwnPc(next: ReadonlyMap<string, OwnRange>): void {
+    this.ownPc.clear();
+    for (const [symbol, r] of next) this.ownPc.set(symbol, r);
+    for (const [symbol, state] of this.tickers) state.flow.ownPc = this.ownPc.get(symbol) ?? null;
   }
 
   applyQuotes(quotes: { symbol: string; price: number; changePct: number | null; at: number }[]): TickerFlow[] {

@@ -19,6 +19,7 @@ import { formatMarketCap, marketCapOf } from '@/lib/market-cap';
 import type { Projection } from '@/lib/projection';
 import type { CalibrationView, HorizonKey } from '@/lib/projection-history';
 import { ProjectionCard, type ProjectionCoverage } from './ProjectionCard';
+import { standing } from '@/lib/own-normal';
 import { timingSentence, timingShort } from '@/lib/signal-timing';
 import { IntradayCards } from './IntradayCards';
 import { RelationshipsCard } from './RelationshipsCard';
@@ -388,6 +389,16 @@ function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
               className={(a.oiPutCall ?? 1) > 1 ? 'text-bearish' : 'text-bullish'}
             />
             <Stat
+              label="OI P/C vs its own range"
+              term="ownPc"
+              value={
+                flow.ownPc
+                  ? `${OWN_STANDING[standing(a.oiPutCall, flow.ownPc) ?? 'normal']} · ${flow.ownPc.lo.toFixed(2)}–${flow.ownPc.hi.toFixed(2)}`
+                  : 'learning'
+              }
+              className={flow.ownPc && standing(a.oiPutCall, flow.ownPc) !== 'normal' ? 'text-slate-100' : 'text-slate-400'}
+            />
+            <Stat
               label="OI change (day)"
               term="oiChange"
               value={flow.oiChangePct !== null ? `${flow.oiChangePct >= 0 ? '+' : ''}${flow.oiChangePct.toFixed(1)}%` : '—'}
@@ -719,6 +730,7 @@ const SIGNAL_NAMES: Record<string, string> = {
   skew_z: 'Skew z',
   divergence: 'Divergence',
   pc_extreme: 'OI P/C extreme',
+  pc_own: 'OI P/C vs own range',
   spike_alert: 'Volume spike',
 };
 const LEVEL_NAMES: Record<string, string> = {
@@ -890,6 +902,9 @@ function Section({ id, children }: { id: string; children: ReactNode }): JSX.Ele
     </section>
   );
 }
+
+/** Where the live OI put/call stands against the name's own usual range (own-normal.ts). */
+const OWN_STANDING = { high: 'Unusually put-heavy', low: 'Unusually call-heavy', normal: 'Normal for it' } as const;
 
 /** Whose graded signals a timing verdict rests on (the most specific level with enough of them). */
 const TIMING_LEVEL: Record<string, string> = {

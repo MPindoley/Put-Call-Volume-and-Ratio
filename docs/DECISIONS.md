@@ -734,6 +734,34 @@ projection grading (§5.10) tests it.
 **If reversed:** the same range multiplier is used the week a stock reports
 in a stressed market as in a quiet week with nothing on the calendar.
 
+### 5.20 Put/call against each name's own range: a second signal, not a replacement (`own-normal.ts`)
+`pc_extreme` uses one band for every name (OI put/call ≥ 1.3 or ≤ 0.7), so a
+stock that is hedged all year fires it every session and a retail favourite
+fires the other side every session. `pc_own` asks the informative question
+instead: is this session outside the name's OWN usual range — at or beyond
+the 5th / 95th percentile of its previous 120 pinned sessions (40 minimum)?
+
+- **Added beside `pc_extreme`, not in place of it.** Redefining the old
+  signal would bump the shared `thresholdVersion` and discard every signal's
+  learned evidence. As a new type, both definitions are graded on the same
+  footing and the record shows which one carries an edge. The grid stays
+  explicit about its size: the matrix reports cells tested and how many
+  would clear by chance.
+- **Cutoffs fixed in advance** (120 / 40 / p05–p95), stamped into every row's
+  `detail` (`OWN_NORMAL.version`); a change is a new stamp, never a silent edit.
+- **Point-in-time and reconstructible.** The percentile uses previous
+  sessions only and is stored on the pinned row (`DailyMetric.oiPcPct`), so
+  the base-rate denominator — days the signal could have fired — is exact
+  (§4.4), and past sessions are filled from stored open interest with no
+  hindsight. `repairOwnPutCall` logs the signals those sessions would have
+  fired (dated on their session), so the new type starts with history.
+- **Shown everywhere the fixed number is.** The scanner's OI P/C cell marks
+  ▲ / ▼ when a name is outside its own range and its tooltip gives the range;
+  the ticker page states where the live figure stands.
+
+**If reversed:** the put/call signal keeps flagging the same structurally
+put-heavy and call-heavy names every day.
+
 ---
 
 ## 6. Cross-cutting invariants (the short list a reviewer should protect)

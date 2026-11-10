@@ -48,6 +48,11 @@ model DailyMetric {
   liveClose           Float?
   putOI               Float?
   callOI              Float?
+  /// The day's OI put/call as a percentile (0–1) of the name's OWN previous
+  /// sessions (own-normal.ts: up to 120, null with fewer than 40) — fixed when
+  /// the row is pinned, so the pc_own signal's could-have-fired days are
+  /// reconstructible point-in-time.
+  oiPcPct             Float?
   rrSkew              Float?
   /// Session option volume (puts + calls) — a liquidity floor for median membership.
   optVolume           Float?

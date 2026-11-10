@@ -50,6 +50,13 @@ export const GLOSSARY = {
     how: "20-day average daily volume × the share of a day this name has usually traded by now — its own learned daily clock for the kind of day it is (regular, weekly-expiry or earnings).",
     read: '1.0× = normal; 3× or more is unusual activity.',
   },
+  ownPc: {
+    term: 'OI put/call vs its own range',
+    what: "Where today's open-interest put/call sits against this name's own recent history, instead of one band for every stock.",
+    how: "The usual range is the 5th to 95th percentile of its last 120 pinned sessions (at least 40). Each session's percentile among the sessions before it is stored, and a session at or beyond the 5th / 95th fires the “OI P/C vs own range” signal, which is graded and learned like the others.",
+    read: 'A stock that institutions always hedge can sit above 1.3 every day: that is normal for it. “Unusually put-heavy” means above its own range, whatever the level.',
+    caveat: 'Needs about two months of captured sessions per name before there is a range.',
+  },
   dailyClock: {
     term: 'Daily clock',
     what: "The share of a day's option volume this name normally trades in each half hour, learned from its own sessions.",

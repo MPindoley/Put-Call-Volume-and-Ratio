@@ -30,6 +30,7 @@ import { logSignals, scoreSignals, trackBackwardationEpisodes } from './signal-j
 import { loadConvictionsIntoEngine, refreshEdgeBooks } from './learning-jobs';
 import { gradeProjections, logProjections, refreshProjectionHistory } from './projection-jobs';
 import { foldIntradayProfiles, loadClocksIntoEngine } from './intraday-jobs';
+import { fillOwnPutCall, loadOwnRangesIntoEngine, repairOwnPutCall } from './own-normal-jobs';
 import { shapeTotals } from './intraday-profile';
 import { gradeSpikeAlerts, loadSpikeBookIntoEngine, SPIKE_HISTORY_DAYS } from './spike-outcome-jobs';
 import type { FlowEngine } from './flow-engine';
@@ -420,6 +421,9 @@ async function captureEndOfDay(engine: FlowEngine, opts: { now?: Date; late?: bo
     // Regime state depends on the finalized SPY close + per-ticker GEX just written;
     // signals fire only once the regime row is final (never on provisional data).
     await recordDailyRegime(engine, now);
+    // Each name's OI put/call against its own previous sessions, stamped on the
+    // rows just pinned: the pc_own signal reads it.
+    await tryDb('own put/call percentile', (db) => fillOwnPutCall(db, etDateKey(now)));
     const emitted = await logSignals(engine, now);
     await trackBackwardationEpisodes(now);
     if (emitted > 0) console.log(`[signals] logged ${emitted} signals for today's session`);
@@ -633,6 +637,11 @@ export async function runMaintenance(engine: FlowEngine): Promise<void> {
       // hand (a new database, an import): fill them in and log the signals they
       // missed, before grading, so the learning sees every session it can.
       await repairThinRelativeDays();
+      // Same idea for each name's put/call against its own range: fill stored
+      // sessions that have none yet, log what they would have fired, and refresh
+      // the usual ranges shown beside the live figures.
+      await repairOwnPutCall();
+      await loadOwnRangesIntoEngine(engine);
       // Phase 4.3: fill forward returns for signals whose 20-trading-day window elapsed.
       const sigScored = await scoreSignals();
       if (sigScored > 0) console.log(`[signals] scored ${sigScored} signals (20-td window elapsed)`);

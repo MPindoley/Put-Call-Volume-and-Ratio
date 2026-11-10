@@ -201,6 +201,12 @@ export interface TickerFlow {
    * the current price (marketCapOf). Null for ETFs/funds and names not listed.
    */
   sharesOutstanding: number | null;
+  /**
+   * The name's own usual open-interest put/call range (own-normal.ts): 5th
+   * percentile, median, 95th percentile over its recent sessions. Null until it
+   * has enough sessions on record.
+   */
+  ownPc?: { lo: number; mid: number; hi: number; n: number } | null;
   /** 30-day implied volatility (vol points, e.g. 27.1) and day change. */
   iv30: number | null;
   iv30Change: number | null;

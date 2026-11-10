@@ -116,7 +116,7 @@ export interface LearningRows {
   cellByDate: Map<string, string>;
   sectorFor: (symbol: string) => string;
   cohortOf: (symbol: string) => string | null;
-  dms: { symbol: string; date: Date; close: number | null; putOI: number | null; callOI: number | null; spikeBaselineDays: number | null; historicalCloseOnly: boolean }[];
+  dms: { symbol: string; date: Date; close: number | null; putOI: number | null; callOI: number | null; spikeBaselineDays: number | null; oiPcPct: number | null; historicalCloseOnly: boolean }[];
   rels: { symbol: string; date: Date; skewZ30: number | null; divergenceWindow: number }[];
   closes: Map<string, Map<string, number>>;
   frozenBy: Map<string, Set<string>>;
@@ -161,6 +161,7 @@ export async function loadLearningRows(db: PrismaClient, cfgIn?: AnalyticsConfig
       putOI: true,
       callOI: true,
       spikeBaselineDays: true,
+      oiPcPct: true,
       historicalCloseOnly: true,
     },
   });
