@@ -16,20 +16,27 @@ import { getAnalyticsConfig } from './analytics-config';
 import { tryDb } from './db';
 import { finalizedMetricWhere } from './finalized-reads';
 import type { FlowEngine } from './flow-engine';
-import { establishedCounts, type Calibration, type Level } from './learning';
+import { establishedCounts, LEARNING_PARAMS, type Calibration, type EdgeBook, type Level, type NodeStats } from './learning';
 import {
   baseRateSweep,
   bookAt,
   bookFromRow,
   convictionsAt,
   currentLearningVersion,
+  deriveLearningInputs,
+  invalidateTimingBooks,
   loadLearningInputs,
+  loadLearningRows,
   parseConvictions,
   selfGrade,
   serializeConvictions,
   type FrozenRun,
+  type LearningInputs,
+  type LearningRows,
 } from './learning-data';
+import { TIMING_HORIZONS } from './signal-timing';
 import { isTradingDay } from './trading-calendar';
+import type { PrismaClient } from '@prisma/client';
 
 /** Upper bound on books reconstructed in one run (one trading year). */
 const MAX_BACKFILL_BOOKS = 252;
@@ -43,8 +50,9 @@ export interface RefreshResult {
 
 export async function refreshEdgeBooks(): Promise<RefreshResult | null> {
   return tryDb('refresh edge books', async (db) => {
-    const inputs = await loadLearningInputs(db);
-    if (!inputs) return null;
+    const rows = await loadLearningRows(db);
+    if (!rows) return null;
+    const inputs = deriveLearningInputs(rows);
     const { sessions, version } = inputs;
     const lastIdx = sessions.length - 1;
 
@@ -86,8 +94,59 @@ export async function refreshEdgeBooks(): Promise<RefreshResult | null> {
       if (isReconstruction) reconstructed += 1;
     }
     if (written > 0) console.log(`[learning] wrote ${written} edge book(s) (${reconstructed} reconstructed), version ${version}`);
+    // The same book at the 5- and 20-session windows, from the rows already in
+    // hand. Its failure must not hide the books just written from the caller.
+    try {
+      await refreshSignalTiming(db, rows, inputs);
+    } catch (err) {
+      console.error('[learning] signal timing failed:', err instanceof Error ? err.message : err);
+    }
     return { version, written, reconstructed, latestAsOf: sessions[lastIdx] ?? null };
   });
+}
+
+// ─── Signal timing: the book at each grading window ──────────────────────────
+
+const iso = (d: Date): string => d.toISOString().slice(0, 10);
+
+/** Node statistics rounded for storage (three books of them are kept in one row). */
+function compactNodes(nodes: EdgeBook['nodes']): Record<string, NodeStats> {
+  const out: Record<string, NodeStats> = {};
+  for (const [key, s] of Object.entries(nodes)) {
+    out[key] = { n: s.n, nEff: Number(s.nEff.toFixed(3)), excess: Number(s.excess.toFixed(4)) };
+  }
+  return out;
+}
+
+/**
+ * Rebuild the latest session's edge book at every grading window and store
+ * the three side by side (signal-timing.ts). Skipped when the stored row is
+ * already for the latest session. `canonical` is the 10-session input set the
+ * caller has already derived, so only the other two windows are derived here.
+ */
+export async function refreshSignalTiming(db: PrismaClient, rows: LearningRows, canonical: LearningInputs): Promise<boolean> {
+  const lastIdx = rows.sessions.length - 1;
+  const asOf = rows.sessions[lastIdx];
+  if (asOf === undefined) return false;
+  const { version } = canonical;
+  const stored = await db.signalTiming.findUnique({ where: { version }, select: { asOf: true } });
+  if (stored && iso(stored.asOf) === asOf) return false;
+
+  const books: Record<string, Record<string, NodeStats>> = {};
+  for (const h of TIMING_HORIZONS) {
+    // One window at a time: each derivation holds every eligible stock-day.
+    const inputs = h === canonical.params.horizon ? canonical : deriveLearningInputs(rows, { ...LEARNING_PARAMS, horizon: h });
+    books[String(h)] = compactNodes(bookAt(inputs, lastIdx).nodes);
+  }
+  await db.$transaction([
+    db.signalTiming.deleteMany({}), // other versions' rows mean nothing now
+    db.signalTiming.create({
+      data: { version, asOf: new Date(`${asOf}T00:00:00Z`), books: books as unknown as Prisma.InputJsonValue },
+    }),
+  ]);
+  invalidateTimingBooks();
+  console.log(`[learning] signal timing rebuilt at ${TIMING_HORIZONS.join('/')} sessions as of ${asOf}`);
+  return true;
 }
 
 /**

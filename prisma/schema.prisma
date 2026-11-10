@@ -404,6 +404,19 @@ model EdgeBook {
   @@index([version, asOf])
 }
 
+/// How long each signal takes to play out (signal-timing.ts): the edge book
+/// rebuilt for the latest session at each grading window — 5, 10 and 20
+/// sessions — from the same graded signals. One row per learning version,
+/// replaced nightly (only the latest matters; the nightly EdgeBook rows keep
+/// the canonical 10-session history).
+model SignalTiming {
+  version   String   @id
+  asOf      DateTime
+  /// { "5": nodes, "10": nodes, "20": nodes } — node statistics as in EdgeBook.nodes.
+  books     Json
+  updatedAt DateTime @default(now())
+}
+
 /// A contiguous backwardation episode per ticker (termSlope below the threshold),
 /// opened/extended/closed forward-only from persisted daily termSlope. On close,
 /// the PRIMARY resolution is the curve shape — 'front_collapse' (near-end IV fell

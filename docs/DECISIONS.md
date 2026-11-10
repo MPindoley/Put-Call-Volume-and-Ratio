@@ -678,6 +678,36 @@ and each name.
 **If reversed:** an alert says volume is unusual and nothing about what that
 has meant at this hour.
 
+### 5.18 Signal timing: the same book at three windows (`signal-timing.ts`)
+The edge book grades every signal on one window, 10 sessions. Every graded
+signal also has its 5- and 20-session returns on record, so each night the
+latest book is rebuilt at all three windows — same evidence, same shrinkage,
+each window against its own regime-matched base rate — and stored side by side
+(`SignalTiming`, one row, replaced nightly). Comparing the three edges says
+how long a signal has taken to work: fast and fading, slow to build, steady,
+no edge, or pointing the wrong way.
+
+- **Like for like.** A signal is graded at all three windows together, once
+  its 20-session window has closed, so the three books rest on the same
+  signals: a difference between windows is timing, not sample.
+- **Picking the best of three flatters it, so the bar is explicit.** An edge
+  must clear 2 points AND its own standard error; a window is named only when
+  it beats the others by 1.5 points (or half the standard error); and a level
+  needs 30 graded signals OF ITS OWN before any verdict. A stock's page reads
+  the timing at the most specific level that has them — the stock, its sector,
+  the market regime, all names — and says which.
+- **Descriptive only.** The learned lean on the scanner stays on the
+  10-session window, the one self-grading holds it to (§5.6). Letting each
+  signal choose its own best window would be choosing after the fact, and
+  would change what a year of graded convictions meant.
+- **One load.** `loadLearningInputs` is split into the database read
+  (`loadLearningRows`) and a pure per-window derivation, so the two extra
+  windows cost no extra queries; they are derived one at a time because each
+  holds every eligible stock-day.
+
+**If reversed:** a signal with a real edge at 5 sessions and none at 10 reads
+as "no edge", and nothing says how long to give a signal that has one.
+
 ---
 
 ## 6. Cross-cutting invariants (the short list a reviewer should protect)

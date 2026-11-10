@@ -62,7 +62,8 @@ function FollowThroughLine({ symbol, f }: { symbol: string; f: SpikeFollowThroug
       className="mt-0.5 text-[10px] text-slate-400 tnum"
       title="How often the price kept moving the way past spikes like this leaned, from the moment the alert appeared (single names: against SPY). 50% is a coin flip."
     >
-      Learned from {who} {f.n} past {f.part} {f.lean === 'calls' ? 'call' : 'put'}-heavy spikes — kept going: {windows.join(' · ')}
+      Learned from {who} {f.n} past {f.part} {f.lean === 'calls' ? 'call' : 'put'}-heavy spikes — kept going:{' '}
+      {windows.join(' · ')}
     </p>
   );
 }

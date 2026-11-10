@@ -62,6 +62,13 @@ export const GLOSSARY = {
     what: "Contracts traded in the half hour, as a percentage of this name's 20-day average daily volume.",
     read: 'The usual bars add up to 100%. Session bars add up to more on a busy day and less on a quiet one.',
   },
+  signalTiming: {
+    term: 'Plays out over',
+    what: 'How long this signal has taken to work: its learned edge when the same signals are graded after 5, 10 and 20 sessions.',
+    how: 'The edge book is rebuilt at each window from the same graded signals, each window against its own base rate. An edge is only called an edge above 2 points and above its own margin of error, and a window is only called best when it clearly beats the others (1.5 points or more).',
+    read: '"~1 week" = strongest early and fading; "~4 weeks" = slow to build; "1–4 weeks" = an edge with no window standing out; "no edge yet" = nothing to time.',
+    caveat: 'Descriptive only. The learned lean on the scanner always uses the 10-session window, which is the one the site grades itself on.',
+  },
   followThrough: {
     term: 'Follow-through',
     what: 'How often the price kept moving the way a spike alert leaned: up after a call-heavy spike, down after a put-heavy one.',

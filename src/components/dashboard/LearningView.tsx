@@ -18,6 +18,8 @@ import type { Coverage, HorizonKey } from '@/lib/projection-history';
 import { Term } from '@/components/ui/term';
 import { SpikeTableView } from '@/components/ticker/IntradayCards';
 import type { IntradayLearningResponse } from '@/app/api/learning/intraday/route';
+import type { SignalTimingView } from '@/app/api/learning/route';
+import { timingSentence, timingShort, type SignalTiming } from '@/lib/signal-timing';
 import { cn } from '@/lib/utils';
 
 interface SummaryResponse {
@@ -30,6 +32,8 @@ interface SummaryResponse {
     rowsUnbased: number;
     signals: SignalSummary[];
   } | null;
+  /** The book at the 5-, 10- and 20-session windows, keyed "signalType|direction"; null until built. */
+  timing: { asOf: string; minGraded: number; signals: Record<string, SignalTimingView> } | null;
 }
 
 const SIGNAL_NAMES: Record<string, string> = {
@@ -433,6 +437,9 @@ function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loa
                 <th className="py-1 text-right font-normal" title="Learned edge: points above base, ± approximate standard error">
                   Learned edge
                 </th>
+                <th className="py-1 pl-4 text-right font-normal">
+                  <Term k="signalTiming">Plays out over</Term>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -440,7 +447,13 @@ function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loa
                 const key = `${s.signalType}|${s.direction}`;
                 const expanded = open === key;
                 return (
-                  <SignalRows key={key} s={s} expanded={expanded} toggle={() => setOpen(expanded ? null : key)} />
+                  <SignalRows
+                    key={key}
+                    s={s}
+                    timing={data?.timing?.signals[key] ?? null}
+                    expanded={expanded}
+                    toggle={() => setOpen(expanded ? null : key)}
+                  />
                 );
               })}
             </tbody>
@@ -448,7 +461,8 @@ function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loa
           <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
             <span className="text-slate-400">How to read this:</span> &ldquo;+4.0 pts&rdquo; means the signal lands on the predicted
             side 4 percentage points more often than the stock does on an ordinary day in the same market conditions. Zero means no
-            demonstrated edge. Click a signal to see it by market regime.
+            demonstrated edge. &ldquo;Plays out over&rdquo; compares the same signals graded after 5, 10 and 20 sessions. Click a signal to
+            see its edge at each window and by market regime.
             {l.rowsUnbased > 0 && ` ${l.rowsUnbased} graded signals had no base rate to compare against and were left out rather than guessed.`}
           </p>
         </div>
@@ -457,7 +471,30 @@ function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loa
   );
 }
 
-function SignalRows({ s, expanded, toggle }: { s: SignalSummary; expanded: boolean; toggle: () => void }): JSX.Element {
+/** "5 sessions +1.2 · 10 sessions +3.1 · 20 sessions +2.0" */
+const windowEdges = (t: SignalTiming): string => t.windows.map((w) => `${w.horizon} sessions ${pts(w.edge)}`).join(' · ');
+
+function TimingCell({ t, className }: { t: SignalTiming | null | undefined; className?: string }): JSX.Element {
+  if (!t) return <td className={cn('pl-4 text-right text-slate-600', className)}>—</td>;
+  const settled = t.verdict !== 'learning' && t.verdict !== 'none';
+  return (
+    <td className={cn('pl-4 text-right', settled ? 'text-slate-200' : 'text-slate-500', className)} title={`${timingSentence(t)} Edge by window: ${windowEdges(t)} pts.`}>
+      {timingShort(t)}
+    </td>
+  );
+}
+
+function SignalRows({
+  s,
+  timing,
+  expanded,
+  toggle,
+}: {
+  s: SignalSummary;
+  timing: SignalTimingView | null;
+  expanded: boolean;
+  toggle: () => void;
+}): JSX.Element {
   const tone = Math.abs(s.edge) < 0.01 ? 'text-slate-400' : s.edge > 0 ? 'text-bullish' : 'text-bearish';
   return (
     <>
@@ -476,7 +513,16 @@ function SignalRows({ s, expanded, toggle }: { s: SignalSummary; expanded: boole
         <td className={cn('py-1.5 text-right font-semibold', tone)}>
           {pts(s.edge)} <span className="font-normal text-slate-500">± {(s.se * 100).toFixed(1)}</span>
         </td>
+        <TimingCell t={timing?.all} className="py-1.5" />
       </tr>
+      {expanded && timing && (
+        <tr className="text-[11px] text-slate-400">
+          <td colSpan={6} className="py-1 pl-6">
+            <span className="text-slate-300">{timingSentence(timing.all)}</span>{' '}
+            {timing.all.verdict !== 'learning' && <span className="text-slate-500">Edge by window: {windowEdges(timing.all)} pts.</span>}
+          </td>
+        </tr>
+      )}
       {expanded &&
         s.regimes.map((r) => (
           <tr key={r.regime} className="text-[11px] text-slate-400">
@@ -485,6 +531,7 @@ function SignalRows({ s, expanded, toggle }: { s: SignalSummary; expanded: boole
             <td className="py-0.5 text-right">{pts(r.raw)}</td>
             <td className="py-0.5 text-right">{pct(r.evidence)}</td>
             <td className="py-0.5 text-right">{pts(r.edge)}</td>
+            <TimingCell t={timing?.regimes[r.regime]} className="py-0.5" />
           </tr>
         ))}
     </>

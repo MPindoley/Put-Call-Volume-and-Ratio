@@ -19,6 +19,7 @@ import { formatMarketCap, marketCapOf } from '@/lib/market-cap';
 import type { Projection } from '@/lib/projection';
 import type { CalibrationView, HorizonKey } from '@/lib/projection-history';
 import { ProjectionCard, type ProjectionCoverage } from './ProjectionCard';
+import { timingSentence, timingShort } from '@/lib/signal-timing';
 import { IntradayCards } from './IntradayCards';
 import { RelationshipsCard } from './RelationshipsCard';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
@@ -766,6 +767,19 @@ function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackReco
                       {pts(l.edge)} pts above <Term k="baseRate">base</Term>
                     </span>
                   </p>
+                  {l.timing && (
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-slate-400">
+                      <Term k="signalTiming">Plays out over</Term>: <span className="text-slate-200">{timingShort(l.timing)}</span>.{' '}
+                      {timingSentence(l.timing)}
+                      {l.timing.verdict !== 'learning' && (
+                        <span className="tnum text-slate-500">
+                          {' '}
+                          Measured on {TIMING_LEVEL[l.timing.level] ?? l.timing.level} ({l.timing.graded} graded) — edge by window:{' '}
+                          {l.timing.windows.map((w) => `${w.horizon} sessions ${pts(w.edge)}`).join(' · ')} pts.
+                        </span>
+                      )}
+                    </p>
+                  )}
                   <table className="mt-1 w-full text-[11px] tnum">
                     <thead className="text-left text-[9px] uppercase tracking-wider text-slate-600">
                       <tr>
@@ -876,6 +890,14 @@ function Section({ id, children }: { id: string; children: ReactNode }): JSX.Ele
     </section>
   );
 }
+
+/** Whose graded signals a timing verdict rests on (the most specific level with enough of them). */
+const TIMING_LEVEL: Record<string, string> = {
+  ticker: "this stock's own signals",
+  sector: "its sector's signals in this market regime",
+  regime: 'all stocks in this market regime',
+  signal: 'all stocks',
+};
 
 /**
  * Two columns on wide screens: the live read on the left (overview, vol &
