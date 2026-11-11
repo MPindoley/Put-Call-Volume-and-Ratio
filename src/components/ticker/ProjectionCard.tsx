@@ -434,7 +434,11 @@ function HistoryCheck({
                 <span key={a.condition}>
                   {i > 0 && ', '}
                   {CONDITION_TEXT[a.condition]?.[a.state] ?? a.state}{' '}
-                  <span className="tnum text-slate-300">×{a.factor.toFixed(2)}</span>
+                  {a.periods > 0 ? (
+                    <span className="tnum text-slate-300">×{a.factor.toFixed(2)}</span>
+                  ) : (
+                    <span className="text-slate-500">(no history of that yet)</span>
+                  )}
                 </span>
               ))}{' '}
               — the estimate is <span className="font-semibold tnum text-slate-200">{cal.conditional.ratio.toFixed(2)}×</span>.

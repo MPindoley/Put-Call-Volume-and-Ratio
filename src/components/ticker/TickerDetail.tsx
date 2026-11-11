@@ -388,16 +388,23 @@ function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
               value={a.oiPutCall !== null ? a.oiPutCall.toFixed(2) : '—'}
               className={(a.oiPutCall ?? 1) > 1 ? 'text-bearish' : 'text-bullish'}
             />
-            <Stat
-              label="OI P/C vs its own range"
-              term="ownPc"
-              value={
-                flow.ownPc
-                  ? `${OWN_STANDING[standing(a.oiPutCall, flow.ownPc) ?? 'normal']} · ${flow.ownPc.lo.toFixed(2)}–${flow.ownPc.hi.toFixed(2)}`
-                  : 'learning'
-              }
-              className={flow.ownPc && standing(a.oiPutCall, flow.ownPc) !== 'normal' ? 'text-slate-100' : 'text-slate-400'}
-            />
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">
+                <Term k="ownPc">OI P/C vs its own range</Term>
+              </p>
+              {flow.ownPc ? (
+                <>
+                  <p className={cn('text-sm font-semibold leading-7', standing(a.oiPutCall, flow.ownPc) === 'normal' ? 'text-slate-400' : 'text-slate-100')}>
+                    {OWN_STANDING[standing(a.oiPutCall, flow.ownPc) ?? 'normal']}
+                  </p>
+                  <p className="text-[10px] tnum text-slate-500">
+                    usually {flow.ownPc.lo.toFixed(2)}–{flow.ownPc.hi.toFixed(2)} · {flow.ownPc.n} sessions
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm font-semibold leading-7 text-slate-500">Learning</p>
+              )}
+            </div>
             <Stat
               label="OI change (day)"
               term="oiChange"

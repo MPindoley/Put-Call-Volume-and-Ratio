@@ -90,7 +90,9 @@ export async function repairOwnPutCall(now = new Date()): Promise<OwnRepairResul
     }
   }
   if (out.signals > 0) {
-    console.log(`[own-normal] ${out.signals} put/call-vs-own-range signals logged for ${out.days} past sessions`);
+    console.log(
+      `[own-normal] put/call-vs-own-range percentiles filled; ${out.signals} signals logged for ${out.days} past sessions`,
+    );
   }
   return out;
 }
