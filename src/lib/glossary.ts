@@ -61,6 +61,43 @@ export const GLOSSARY = {
     read: 'Ranges and option prices that span this date include the event. “Rich” means more is priced than the stock’s past reactions; “cheap” means less.',
   },
 
+  // ── Learning at a glance (the six tiles at the top of the Learning page) ──
+  learnSelfGrade: {
+    term: 'Is it working? (self-grade)',
+    what: 'The app’s own report card: when it showed a lean on a stock, how much more often than normal did the stock then go that way?',
+    how: 'Every lean shown is logged and graded 10 sessions later against SPY. “Delivered” is the hit rate minus the ordinary-day rate for the same stocks; “claimed” is what the leans predicted on average.',
+    read: 'Delivered above zero means its leans carried real information. Delivered close to claimed means it is well calibrated; far below means it has been overconfident.',
+    caveat: 'Needs a few weeks of graded calls before the number means much.',
+  },
+  learnGraded: {
+    term: 'Signals graded',
+    what: 'How many signals have completed their 10-session window and been scored — the evidence everything learned rests on.',
+    how: 'A signal is logged when it fires and graded 10 trading sessions later: did the stock beat SPY in the direction it pointed?',
+    read: 'More graded signals means firmer estimates. “Logged” also counts the ones still waiting.',
+  },
+  learnPending: {
+    term: 'Awaiting grades',
+    what: 'Signals that have fired but whose 10-session window has not closed yet.',
+    read: 'These become evidence as their windows close; “next due” is the session the next one can be graded.',
+  },
+  learnEstablished: {
+    term: 'Established estimates',
+    what: 'How many of the learned estimates now rest mostly on their own evidence instead of borrowing from a broader level.',
+    how: 'Estimates are kept per signal, per market regime, per sector and per stock. Each starts from the level above and moves only as far as its own graded signals earn; “established” means it has earned at least half its weight.',
+    read: 'Signal-level estimates establish first. Stock-level ones need roughly 80 graded signals each, so that count grows slowly.',
+  },
+  learnCaptured: {
+    term: 'Sessions captured',
+    what: 'Trading days on which the app pinned a full end-of-day reading of the options data.',
+    read: 'Everything learned is built from these. Days before the first capture have prices only (backfilled), which is enough to grade signals but not to create them.',
+  },
+  learnSnapshots: {
+    term: 'Nightly snapshots',
+    what: 'Saved copies of everything learned, one per session, so past leans can be graded against what was known at the time.',
+    how: '“Live” snapshots were saved on the night; “rebuilt” ones were reconstructed afterwards from the same data, using only what was known by then.',
+    read: 'One per captured session is normal.',
+  },
+
   // ── Flow ──
   putCallRatio: {
     term: 'Put/Call ratio',
