@@ -9,6 +9,7 @@ import {
   glanceTiles,
   range68,
   sectionHeadlines,
+  sectionList,
   widestZ,
   type GlanceTile,
   type SummaryInput,
@@ -464,5 +465,34 @@ describe('glanceSentence', () => {
       ivRank: 50,
     });
     expect(glanceSentence(inputOf({ flow }))).toBe('Options flow is call-heavy on 1.4× its usual volume. No learned lean today.');
+  });
+});
+
+describe('sectionList', () => {
+  const ids = (input: SummaryInput): string[] => sectionList(input).map((d) => d.id);
+
+  it('always has the sections every stock has, in reading order', () => {
+    expect(ids(inputOf())).toEqual(['projection', 'overview', 'relative', 'time-of-day', 'relationships', 'history']);
+  });
+
+  it('adds a section only when the stock has something for it', () => {
+    const flow = flowOf({
+      iv30: 30,
+      eventGauge: { eventDate: '2026-11-19' } as NonNullable<TickerFlow['eventGauge']>,
+      idiosyncraticMoves: [{ date: '2026-10-28', movePct: 0.05, residualZ: 4 }],
+    });
+    const trackRecord = { horizon: 10, bySignal: [], recent: [], learned: [], note: null } as unknown as TrackRecord;
+    expect(ids(inputOf({ flow, trackRecord }))).toEqual([
+      'projection',
+      'overview',
+      'volatility',
+      'relative',
+      'track-record',
+      'event',
+      'idiosyncratic',
+      'time-of-day',
+      'relationships',
+      'history',
+    ]);
   });
 });

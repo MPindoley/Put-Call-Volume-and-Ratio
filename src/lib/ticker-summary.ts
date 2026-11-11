@@ -109,6 +109,28 @@ export type SectionId =
   | 'relationships'
   | 'history';
 
+export interface SectionDef {
+  id: SectionId;
+  title: string;
+}
+
+/** Which sections a stock has, in reading order (sections with nothing to show are skipped). */
+export function sectionList({ flow, trackRecord }: Pick<SummaryInput, 'flow' | 'trackRecord'>): SectionDef[] {
+  const out: SectionDef[] = [
+    { id: 'projection', title: 'Projection' },
+    { id: 'overview', title: 'Flow now' },
+  ];
+  if (flow.analytics || flow.iv30 !== null) out.push({ id: 'volatility', title: 'Volatility & positioning' });
+  out.push({ id: 'relative', title: 'Versus its sector' });
+  if (trackRecord) out.push({ id: 'track-record', title: 'Track record' });
+  if (flow.eventGauge) out.push({ id: 'event', title: 'Event move' });
+  if (flow.idiosyncraticMoves.length > 0) out.push({ id: 'idiosyncratic', title: 'Unusual moves' });
+  out.push({ id: 'time-of-day', title: 'Time of day' });
+  out.push({ id: 'relationships', title: 'Relationships' });
+  out.push({ id: 'history', title: 'Stored snapshots' });
+  return out;
+}
+
 function projectionHeadline({ flow, projection }: SummaryInput): string {
   const week = expiryNear(projection, 7);
   if (!projection || !week) return 'Waiting for the option chain';

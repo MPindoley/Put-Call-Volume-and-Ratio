@@ -21,21 +21,34 @@ const TONE_CLASS: Record<Tone, string> = {
   muted: 'text-slate-500',
 };
 
-/** Expects six tiles: two, three or six to a row leaves no empty cell. */
+/** Expects six tiles: two, three or six to a row leaves no empty cell. `narrow` keeps two to a row at any screen width. */
 export function GlanceBlock({
   label,
   sentence,
+  narrow = false,
   children,
 }: {
   label: string;
   sentence?: string;
+  narrow?: boolean;
   children: ReactNode;
 }): JSX.Element {
   return (
     <section aria-label={label} className="overflow-hidden rounded-lg border border-surface-border bg-surface-raised">
-      {sentence && <p className="border-b border-surface-border px-4 py-3 text-sm leading-relaxed text-slate-200">{sentence}</p>}
+      {sentence && (
+        <p
+          className={cn(
+            'border-b border-surface-border leading-relaxed text-slate-200',
+            narrow ? 'px-3 py-2.5 text-xs' : 'px-4 py-3 text-sm',
+          )}
+        >
+          {sentence}
+        </p>
+      )}
       {/* One-pixel gaps over the border colour draw the dividers between tiles at every column count. */}
-      <div className="grid grid-cols-2 gap-px bg-surface-border md:grid-cols-3 xl:grid-cols-6">{children}</div>
+      <div className={cn('grid grid-cols-2 gap-px bg-surface-border', !narrow && 'md:grid-cols-3 xl:grid-cols-6')}>
+        {children}
+      </div>
     </section>
   );
 }

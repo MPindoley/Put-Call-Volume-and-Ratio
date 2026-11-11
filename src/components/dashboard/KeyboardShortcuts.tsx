@@ -13,9 +13,9 @@ import { useFlowStore } from '@/store/flowStore';
 
 const SHORTCUTS: [string, string][] = [
   ['/', 'Search or jump to a ticker'],
-  ['↑ ↓', 'Move through search matches'],
+  ['↑ ↓', 'Move through search matches — or, with a quick look open, through the scanner'],
   ['Enter', 'Open the highlighted ticker'],
-  ['Esc', 'Clear + leave the search'],
+  ['Esc', 'Clear + leave the search, or close the quick look'],
   ['?', 'Toggle this help'],
 ];
 

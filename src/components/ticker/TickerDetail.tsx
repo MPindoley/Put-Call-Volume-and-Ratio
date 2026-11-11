@@ -6,8 +6,7 @@
  */
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useMemo, type MouseEvent, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useMemo, type MouseEvent, type ReactNode } from 'react';
 import { Card, CardHeader } from '@/components/ui/card';
 import { CollapsibleSection, useSections, type Sections } from '@/components/ui/collapsible';
 import { DetailToggle, useDetail } from '@/components/ui/more-detail';
@@ -18,60 +17,18 @@ import { Sparkline } from '@/components/dashboard/Sparkline';
 import { Term } from '@/components/ui/term';
 import type { GlossaryKey } from '@/lib/glossary';
 import { formatMarketCap, marketCapOf } from '@/lib/market-cap';
-import type { Projection } from '@/lib/projection';
-import type { CalibrationView, HorizonKey } from '@/lib/projection-history';
 import { AtAGlance } from './AtAGlance';
-import { ProjectionCard, type ProjectionCoverage } from './ProjectionCard';
+import { ProjectionCard } from './ProjectionCard';
 import { standing } from '@/lib/own-normal';
 import { timingSentence, timingShort } from '@/lib/signal-timing';
-import { sectionHeadlines, type SectionId, type SummaryInput } from '@/lib/ticker-summary';
+import { sectionHeadlines, sectionList, type SectionDef, type SectionId, type SummaryInput } from '@/lib/ticker-summary';
+import { useTickerDetail, type DetailResponse } from '@/hooks/useTickerDetail';
 import { IntradayCards } from './IntradayCards';
 import { RelationshipsCard } from './RelationshipsCard';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
 import type { TrackRecord } from '@/lib/learning-data';
 import { useFlowStore } from '@/store/flowStore';
 import type { TickerFlow } from '@/types';
-
-interface HistoryPoint {
-  bucketStart: string;
-  putVolume: number;
-  callVolume: number;
-  putCallRatio: number;
-  spikeScore: number;
-}
-
-interface DetailResponse {
-  flow: TickerFlow;
-  history: HistoryPoint[];
-  trackRecord: TrackRecord | null;
-  projection: Projection | null;
-  calibration: Record<HorizonKey, CalibrationView> | null;
-  projectionCoverage: ProjectionCoverage;
-}
-
-interface SectionDef {
-  id: SectionId;
-  title: string;
-}
-
-/** Which sections this ticker has, in reading order (sections with nothing to show are skipped). */
-function sectionsFor(data: DetailResponse | undefined): SectionDef[] {
-  const out: SectionDef[] = [
-    { id: 'projection', title: 'Projection' },
-    { id: 'overview', title: 'Flow now' },
-  ];
-  if (!data) return out;
-  const { flow } = data;
-  if (flow.analytics || flow.iv30 !== null) out.push({ id: 'volatility', title: 'Volatility & positioning' });
-  out.push({ id: 'relative', title: 'Versus its sector' });
-  if (data.trackRecord) out.push({ id: 'track-record', title: 'Track record' });
-  if (flow.eventGauge) out.push({ id: 'event', title: 'Event move' });
-  if (flow.idiosyncraticMoves && flow.idiosyncraticMoves.length > 0) out.push({ id: 'idiosyncratic', title: 'Unusual moves' });
-  out.push({ id: 'time-of-day', title: 'Time of day' });
-  out.push({ id: 'relationships', title: 'Relationships' });
-  out.push({ id: 'history', title: 'Stored snapshots' });
-  return out;
-}
 
 /** The "?" beside each section title: what the section is for and how to read it. */
 const SECTION_HELP: Record<SectionId, GlossaryKey> = {
@@ -91,24 +48,20 @@ const SECTION_HELP: Record<SectionId, GlossaryKey> = {
 const SECTIONS_KEY = 'ticker.sections';
 
 export function TickerDetail({ symbol }: { symbol: string }): JSX.Element {
-  const query = useQuery({
-    queryKey: ['ticker', symbol],
-    queryFn: async (): Promise<DetailResponse> => {
-      const res = await fetch(`/api/flow/${symbol}`);
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { pending?: boolean } | null;
-        throw new Error(res.status === 404 ? (body?.pending ? 'pending' : 'not-tracked') : 'fetch-failed');
-      }
-      return (await res.json()) as DetailResponse;
-    },
-    refetchInterval: 15_000,
-    retry: 1,
-  });
+  const query = useTickerDetail(symbol);
   // The streamed row (socket) is fresher than the 15s detail poll — prefer it for the header.
   const liveRow = useFlowStore((s) => s.rows[symbol]);
   const headerFlow = liveRow ?? query.data?.flow ?? null;
-  const defs = useMemo(() => sectionsFor(query.data), [query.data]);
+  const defs = useMemo(() => (query.data ? sectionList(query.data) : []), [query.data]);
   const sections = useSections(SECTIONS_KEY);
+
+  // Arriving on a link to a section (the scanner's quick look, a bookmark) opens that section.
+  const loaded = query.data !== undefined;
+  const { reveal } = sections;
+  useEffect(() => {
+    const id = window.location.hash.slice(1);
+    if (loaded && id && document.getElementById(id)) reveal(id);
+  }, [loaded, reveal]);
 
   // In-page links ("How it was learned →") open the section they point at, not just scroll to its closed bar.
   const openLinkedSection = (e: MouseEvent<HTMLDivElement>): void => {
@@ -121,7 +74,7 @@ export function TickerDetail({ symbol }: { symbol: string }): JSX.Element {
 
   return (
     <div onClick={openLinkedSection}>
-      <TickerHeader symbol={symbol} flow={headerFlow} defs={query.data ? defs : []} sections={sections} />
+      <TickerHeader symbol={symbol} flow={headerFlow} defs={defs} sections={sections} />
       <div className="mx-auto max-w-7xl px-4 pb-8 pt-4 lg:px-6">
         {query.isLoading ? (
           <div className="space-y-2">
