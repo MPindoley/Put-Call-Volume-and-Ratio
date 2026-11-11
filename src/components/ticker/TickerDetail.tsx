@@ -73,6 +73,20 @@ function sectionsFor(data: DetailResponse | undefined): SectionDef[] {
   return out;
 }
 
+/** The "?" beside each section title: what the section is for and how to read it. */
+const SECTION_HELP: Record<SectionId, GlossaryKey> = {
+  projection: 'secProjection',
+  overview: 'secFlow',
+  volatility: 'secVolatility',
+  relative: 'secRelative',
+  'track-record': 'secTrackRecord',
+  event: 'secEvent',
+  idiosyncratic: 'secIdiosyncratic',
+  'time-of-day': 'secTimeOfDay',
+  relationships: 'secRelationships',
+  history: 'secHistory',
+};
+
 /** Remembered per browser, not per stock: the layout you leave is the layout the next stock opens with. */
 const SECTIONS_KEY = 'ticker.sections';
 
@@ -635,10 +649,12 @@ function EventGaugeCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
         <Stat label="Clean diffusive vol" term="diffusiveVol" value={g.diffusiveVol !== null ? `${(g.diffusiveVol * 100).toFixed(1)}` : '—'} />
         <Stat
           label="Extraction"
+          term="eventExtraction"
           value={g.impliedMethod === 'pre-event-reference' ? 'pre-event ref' : g.impliedMethod === 'two-post-event' ? 'two post-event' : '—'}
         />
         <Stat
           label="Catalyst"
+          term="catalystDate"
           value={g.eventDate ?? 'none'}
           className={g.eventSource === 'bulge' ? 'text-caution' : undefined}
         />
@@ -960,7 +976,9 @@ function TickerBody({ data, defs, sections }: { data: DetailResponse; defs: Sect
           className={measured ? (flow.netFlow > 0 ? 'text-bullish' : flow.netFlow < 0 ? 'text-bearish' : undefined) : 'text-slate-600'}
         />
         <div>
-          <p className="text-[10px] uppercase tracking-wider text-slate-500">P/C — last 30 min</p>
+          <p className="text-[10px] uppercase tracking-wider text-slate-500">
+            <Term k="putCallRatio">P/C</Term> — last 30 min
+          </p>
           <div className="mt-1">
             <Sparkline points={flow.ratioSparkline} />
           </div>
@@ -987,8 +1005,12 @@ function TickerBody({ data, defs, sections }: { data: DetailResponse; defs: Sect
                 <th className="px-3 py-1.5">5-minute bucket (data time)</th>
                 <th className="px-3 py-1.5 text-right">Puts</th>
                 <th className="px-3 py-1.5 text-right">Calls</th>
-                <th className="px-3 py-1.5 text-right">P/C</th>
-                <th className="px-3 py-1.5 text-right">Score</th>
+                <th className="px-3 py-1.5 text-right">
+                  <Term k="putCallRatio">P/C</Term>
+                </th>
+                <th className="px-3 py-1.5 text-right">
+                  <Term k="unusual">Score</Term>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -1018,6 +1040,7 @@ function TickerBody({ data, defs, sections }: { data: DetailResponse; defs: Sect
           id={d.id}
           title={d.title}
           summary={headlines[d.id]}
+          help={SECTION_HELP[d.id]}
           open={sections.isOpen(d.id)}
           onToggle={() => sections.toggle(d.id)}
         >
@@ -1025,7 +1048,7 @@ function TickerBody({ data, defs, sections }: { data: DetailResponse; defs: Sect
         </CollapsibleSection>
       ))}
       <p className="pt-1 text-[10px] text-slate-500">
-        Underlined terms explain themselves — hover, tab to them, or tap for the definition, how it is computed and how to read it.
+        Underlined terms and the ? beside each section explain themselves — hover, tab to them, or tap for what it is, how it is worked out and how to read it.
       </p>
     </div>
   );

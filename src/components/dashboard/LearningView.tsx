@@ -19,6 +19,7 @@ import type { CoverageReport, Stage, StageStatus, StockCoverage } from '@/lib/le
 import type { LearningReport } from '@/lib/learning-jobs';
 import type { Condition, ConditionFactors, Coverage, HorizonKey } from '@/lib/projection-history';
 import { Term } from '@/components/ui/term';
+import type { GlossaryKey } from '@/lib/glossary';
 import { SpikeTableView } from '@/components/ticker/IntradayCards';
 import type { IntradayLearningResponse } from '@/app/api/learning/intraday/route';
 import type { SignalTimingView } from '@/app/api/learning/route';
@@ -84,14 +85,14 @@ const useProjectionRecord = () =>
     refetchInterval: 300_000,
   });
 
-const SECTIONS: { id: LearningSectionId; title: string }[] = [
-  { id: 'signals', title: 'Signal by signal' },
-  { id: 'together', title: 'Signals together' },
-  { id: 'self-grade', title: 'Is it getting better?' },
-  { id: 'time-of-day', title: 'Time of day' },
-  { id: 'projection', title: 'Projection track record' },
-  { id: 'coverage', title: 'Data coverage by stock' },
-  { id: 'health', title: 'Data health' },
+const SECTIONS: { id: LearningSectionId; title: string; help: GlossaryKey }[] = [
+  { id: 'signals', title: 'Signal by signal', help: 'secLearnSignals' },
+  { id: 'together', title: 'Signals together', help: 'secLearnTogether' },
+  { id: 'self-grade', title: 'Is it getting better?', help: 'secLearnSelfGrade' },
+  { id: 'time-of-day', title: 'Time of day', help: 'secLearnTimeOfDay' },
+  { id: 'projection', title: 'Projection track record', help: 'secLearnProjection' },
+  { id: 'coverage', title: 'Data coverage by stock', help: 'secLearnCoverage' },
+  { id: 'health', title: 'Data health', help: 'secLearnHealth' },
 ];
 const SECTION_IDS = SECTIONS.map((s) => s.id);
 const titleOf = (id: LearningSectionId): string => SECTIONS.find((s) => s.id === id)!.title;
@@ -200,6 +201,7 @@ export function LearningView(): JSX.Element {
           id={d.id}
           title={d.title}
           summary={headlines[d.id]}
+          help={d.help}
           open={sections.isOpen(d.id)}
           onToggle={() => sections.toggle(d.id)}
         >
@@ -207,7 +209,7 @@ export function LearningView(): JSX.Element {
         </CollapsibleSection>
       ))}
       <p className="pt-1 text-[10px] text-slate-500">
-        Underlined terms explain themselves — hover, tab to them, or tap for the definition, how it is computed and how to read it.
+        Underlined terms and the ? beside each section explain themselves — hover, tab to them, or tap for what it is, how it is worked out and how to read it.
       </p>
     </div>
   );
@@ -435,15 +437,17 @@ function TimeOfDayCard(): JSX.Element {
           by time of day.
         </p>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Tile label="Stocks with own sessions" value={`${clock.withOwnData} / ${clock.names}`} sub="the rest use their sector's clock" />
+          <Tile label="Stocks with own sessions" term="dailyClock" value={`${clock.withOwnData} / ${clock.names}`} sub="the rest use their sector's clock" />
           <Tile
             label="Mostly their own clock"
+            term="dailyClock"
             value={String(clock.mostlyOwn)}
             sub={`${clock.params.stockPrior}+ sessions on record; the most any stock has is ${clock.maxSessions}`}
           />
-          <Tile label="Spike alerts graded" value={String(spikes.episodes)} sub={`${spikes.pending} waiting for a session to settle`} />
+          <Tile label="Spike alerts graded" term="followThrough" value={String(spikes.episodes)} sub={`${spikes.pending} waiting for a session to settle`} />
           <Tile
             label="First hour, all stocks"
+            term="normalDayShare"
             value={pct(firstHour('regular'))}
             sub={clock.learned ? `expiry days ${pct(firstHour('expiry'))} · earnings days ${pct(firstHour('earnings'))}` : 'the starting curve, until sessions are folded in'}
           />
@@ -524,10 +528,10 @@ function TimeOfDayCard(): JSX.Element {
   );
 }
 
-function Tile({ label, value, sub }: { label: string; value: string; sub?: string }): JSX.Element {
+function Tile({ label, value, sub, term }: { label: string; value: string; sub?: string; term?: GlossaryKey }): JSX.Element {
   return (
     <div>
-      <p className="text-[10px] uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="text-[10px] uppercase tracking-wider text-slate-500">{term ? <Term k={term}>{label}</Term> : label}</p>
       <p className="text-lg font-semibold tnum text-slate-100">{value}</p>
       {sub && <p className="text-[10px] text-slate-500">{sub}</p>}
     </div>
@@ -560,14 +564,14 @@ function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loa
               <tr>
                 <th className="py-1 font-normal">Signal</th>
                 <th className="py-1 text-right font-normal">Graded</th>
-                <th className="py-1 text-right font-normal" title="Hit rate above base rate, straight from the data (unshrunk)">
-                  Raw record
+                <th className="py-1 text-right font-normal">
+                  <Term k="rawRecord">Raw record</Term>
                 </th>
-                <th className="py-1 text-right font-normal" title="Share of the estimate this signal's own evidence earned">
-                  Confidence
+                <th className="py-1 text-right font-normal">
+                  <Term k="evidenceWeight">Confidence</Term>
                 </th>
-                <th className="py-1 text-right font-normal" title="Learned edge: points above base, ± approximate standard error">
-                  Learned edge
+                <th className="py-1 text-right font-normal">
+                  <Term k="learnedEdge">Learned edge</Term>
                 </th>
                 <th className="py-1 pl-4 text-right font-normal">
                   <Term k="signalTiming">Plays out over</Term>
