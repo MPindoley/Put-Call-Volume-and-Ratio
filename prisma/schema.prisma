@@ -591,6 +591,11 @@ model Alert {
   /// 0 = not graded; 1 = the intraday windows are graded; 2 = finished (closes
   /// graded too, or given up as unmeasurable).
   gradeStage     Int      @default(0)
+  /// Breadth when the alert fired (spike-outcomes.ts): names in its sector
+  /// spiking at that moment, this one included, out of those with data that
+  /// session. Null on alerts from before this was recorded.
+  sectorSpiking  Int?
+  sectorNames    Int?
 
   ticker Ticker @relation(fields: [symbol], references: [symbol])
 

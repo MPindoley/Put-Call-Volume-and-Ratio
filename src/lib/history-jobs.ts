@@ -64,6 +64,8 @@ export async function persistAlert(alert: SpikeAlert): Promise<void> {
         contracts: alert.contracts,
         putCallRatio: alert.putCallRatio,
         createdAt: new Date(alert.createdAt),
+        sectorSpiking: alert.breadth?.spiking ?? null,
+        sectorNames: alert.breadth?.names ?? null,
       },
     }),
   );

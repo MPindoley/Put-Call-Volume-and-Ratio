@@ -762,6 +762,16 @@ the 5th / 95th percentile of its previous 120 pinned sessions (40 minimum)?
 **If reversed:** the put/call signal keeps flagging the same structurally
 put-heavy and call-heavy names every day.
 
+### 5.21 One name, or its sector at once (`spike-outcomes.ts`, `sector-leaders.ts`)
+**Breadth of a spike.** When an alert fires, the engine counts the names in
+its sector that are spiking at that moment (this one included, among names
+holding that session's data) and how many lean the same way. From 3 names and
+8% of the sector it is "sector-wide", otherwise "one name"; the count is
+stored on the alert (`sectorSpiking` / `sectorNames`), shown in the feed, and
+lone and sector-wide spikes are graded apart (all times of day together,
+single names only, shrunk from a coin flip, 20 graded before anything shows).
+The cutoff was fixed before any result existed. ETFs have no breadth.
+
 ---
 
 ## 6. Cross-cutting invariants (the short list a reviewer should protect)

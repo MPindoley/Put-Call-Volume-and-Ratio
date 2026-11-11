@@ -76,6 +76,13 @@ export const GLOSSARY = {
     read: '"~1 week" = strongest early and fading; "~4 weeks" = slow to build; "1–4 weeks" = an edge with no window standing out; "no edge yet" = nothing to time.',
     caveat: 'Descriptive only. The learned lean on the scanner always uses the 10-session window, which is the one the site grades itself on.',
   },
+  spikeBreadth: {
+    term: 'Lone or sector-wide spike',
+    what: "Whether a spike alert is one stock on its own or its sector lighting up at once.",
+    how: "When an alert fires, the site counts how many stocks in the same sector are spiking at that moment. It is sector-wide from 3 stocks and 8% of the sector; otherwise one stock. Follow-through is then graded separately for the two kinds.",
+    read: 'A lone spike is news about that stock. A sector-wide one is about the group — the stock may just be along for the ride.',
+    caveat: 'Quiet stocks are refreshed less often, so a sector-wide move can be undercounted in its first minutes.',
+  },
   followThrough: {
     term: 'Follow-through',
     what: 'How often the price kept moving the way a spike alert leaned: up after a call-heavy spike, down after a put-heavy one.',

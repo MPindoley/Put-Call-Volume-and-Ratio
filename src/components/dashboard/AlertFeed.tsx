@@ -32,6 +32,16 @@ export function AlertFeed({ embedded = false }: { embedded?: boolean }): JSX.Ele
               <p className="mt-0.5 text-[10px] text-slate-500 tnum">
                 {formatCompact(a.contracts)} contracts · {formatPremium(a.premium)} premium
               </p>
+              {a.breadth && (
+                <p
+                  className="mt-0.5 text-[10px] text-slate-400 tnum"
+                  title="How many names in its sector were spiking when this alert fired"
+                >
+                  {a.breadth.crowd ? 'Sector-wide' : 'One name'}: {a.breadth.spiking} of {a.breadth.names} {a.breadth.sector}{' '}
+                  names spiking
+                  {a.breadth.spiking > 1 && ` (${a.breadth.sameLean} leaning the same way)`}
+                </p>
+              )}
               {a.followThrough && <FollowThroughLine symbol={a.symbol} f={a.followThrough} />}
             </Link>
           </li>

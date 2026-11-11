@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  breadthTable,
   buildSpikeBook,
   dayPartOf,
   dedupeEpisodes,
@@ -8,6 +9,7 @@ import {
   followThroughNote,
   gradeCloses,
   gradeIntraday,
+  isCrowd,
   leanOf,
   priceNear,
   spikeTable,
@@ -235,5 +237,42 @@ describe('followThroughNote', () => {
     const afterBell = followThroughNote(book, target, 400, 'calls')!;
     expect(afterBell).toMatchObject({ m30: null, close: null });
     expect(afterBell.next).not.toBeNull();
+  });
+});
+
+describe('lone or sector-wide', () => {
+  it('calls it sector-wide from three names and 8% of the sector', () => {
+    expect(isCrowd(1, 60)).toBe(false);
+    expect(isCrowd(2, 10)).toBe(false); // two names are never a crowd
+    expect(isCrowd(3, 20)).toBe(true);
+    expect(isCrowd(4, 60)).toBe(false); // 8% of 60 is five
+    expect(isCrowd(5, 60)).toBe(true);
+  });
+
+  it('grades lone and sector-wide spikes apart, leaving out alerts from before breadth was recorded', () => {
+    const book = buildSpikeBook([
+      ...many(40, { crowd: false, signed: 1 }), // lone call-heavy spikes follow through…
+      ...many(30, { crowd: true, signed: -1 }), // …sector-wide ones fade
+      ...many(25, { signed: 1 }), // no breadth on record
+      ...many(25, { crowd: true, isEtf: true, sector: 'ETF', signed: 1 }), // ETFs have no sector to be wide in
+    ]);
+    const rows = breadthTable(book);
+    expect(rows.map((r) => `${r.kind}|${r.lean}`)).toEqual(['lone|calls', 'lone|puts', 'crowd|calls', 'crowd|puts']);
+    const lone = rows[0]!;
+    const crowd = rows[2]!;
+    expect(lone.n).toBe(40);
+    expect(crowd.n).toBe(30);
+    expect(lone.cells.close.rate).toBeCloseTo((40 + 15) / (40 + 30), 9); // shrunk from a coin flip
+    expect(crowd.cells.close.rate).toBeLessThan(0.3);
+    expect(rows[1]!.cells.close.rate).toBeNull(); // no put-heavy ones graded
+    // The time-of-day cells still count every graded spike, breadth or not.
+    expect(estimate(book, { isEtf: false }, 'all', 'morning', 'calls', 'close')!.n).toBe(95);
+  });
+
+  it('waits for enough graded spikes of a kind', () => {
+    expect(breadthTable(buildSpikeBook(many(19, { crowd: true, signed: 1 })))[2]!.cells.close).toMatchObject({
+      rate: null,
+      n: 19,
+    });
   });
 });

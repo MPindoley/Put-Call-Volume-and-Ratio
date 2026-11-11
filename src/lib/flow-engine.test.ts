@@ -186,3 +186,40 @@ describe('FlowEngine.ingestRealtime — real-time overlay', () => {
     expect(e.realtimeInfo(T0 + 22 * MIN + REALTIME_FRESH_MS + 1)?.liveTickers).toBe(0);
   });
 });
+
+describe('FlowEngine — one name or its sector at once', () => {
+  /** Three cycles of a name: quiet, or with volume far beyond its baseline (enough to confirm an alert). */
+  function run(e: FlowEngine, symbol: string, spike: boolean, startMin: number, callHeavy = true): void {
+    e.detector.setBaseline(symbol, { avgDailyVolume: 1_000, stdDevVolume: 100, intradayShape: [], sampleDays: 20 });
+    for (let i = 0; i < 3; i++) {
+      const total = spike ? 40_000 * (i + 1) : 30 + i;
+      const call = callHeavy ? total * 0.7 : total * 0.3;
+      e.ingest(snap(startMin + i * 3, total - call, call, { symbol, putPremium: (total - call) * 100, callPremium: call * 100 }), T0 + (startMin + i * 3) * MIN);
+    }
+  }
+
+  it('tells a lone spike from a sector-wide one, and counts who leans the same way', () => {
+    const e = new FlowEngine();
+    const alerts: { symbol: string; breadth: unknown }[] = [];
+    e.onAlert((a) => alerts.push({ symbol: a.symbol, breadth: a.breadth }));
+    // Technology is quiet except AAPL: one name.
+    for (const s of ['MSFT', 'NVDA', 'AMD', 'AVGO', 'ORCL']) run(e, s, false, 0);
+    run(e, 'AAPL', true, 10);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ symbol: 'AAPL', breadth: { sector: 'Technology', spiking: 1, sameLean: 1, names: 6, crowd: false } });
+    // Then MSFT (calls) and NVDA (puts) spike too: by the third it is the sector.
+    run(e, 'MSFT', true, 20);
+    run(e, 'NVDA', true, 30, false);
+    expect(alerts[1]!.breadth).toMatchObject({ spiking: 2, sameLean: 2, crowd: false });
+    expect(alerts[2]).toMatchObject({ symbol: 'NVDA', breadth: { spiking: 3, sameLean: 1, names: 6, crowd: true } });
+  });
+
+  it('has no breadth for an ETF: it has no sector to be wide in', () => {
+    const e = new FlowEngine();
+    const alerts: { breadth: unknown }[] = [];
+    e.onAlert((a) => alerts.push({ breadth: a.breadth }));
+    run(e, 'SPY', true, 0);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.breadth).toBeNull();
+  });
+});

@@ -9,7 +9,7 @@ import { prisma } from './db';
 import { FlowEngine } from './flow-engine';
 import { foldIntradayProfiles, loadClockReport, loadClocksIntoEngine } from './intraday-jobs';
 import { BUCKETS, DEFAULT_INTRADAY_SHAPE } from './intraday-profile';
-import { gradeSpikeAlerts, loadSpikeBookIntoEngine, loadSpikeReport } from './spike-outcome-jobs';
+import { gradeSpikeAlerts, loadSpikeBookIntoEngine, loadSpikeReport, loadSpikeSummary } from './spike-outcome-jobs';
 import { sessionBounds } from './trading-calendar';
 
 const RUN = process.env.RUN_DB_TESTS === '1' && !!prisma;
@@ -229,6 +229,13 @@ describe.skipIf(!RUN)('time-of-day learning (RUN_DB_TESTS=1)', () => {
     expect(r.tables[0]!.rows.find((row) => row.part === 'morning' && row.lean === 'calls')!.n).toBe(1);
     expect(r.tables[0]!.rows[0]!.cells.close.rate).toBeNull(); // three spikes are far too few to quote
     expect(r.recent).toHaveLength(4);
+    // Breadth recorded when an alert fired is graded apart: the morning one was sector-wide.
+    await db.alert.update({ where: { id: 'zz-morning' }, data: { sectorSpiking: 6, sectorNames: 60 } });
+    await db.alert.update({ where: { id: 'zz-today' }, data: { sectorSpiking: 1, sectorNames: 60 } });
+    await loadSpikeBookIntoEngine(engine, NOW);
+    const breadth = (await loadSpikeSummary(engine)).breadth;
+    expect(breadth.find((b) => b.kind === 'crowd' && b.lean === 'calls')!.n).toBe(1);
+    expect(breadth.find((b) => b.kind === 'lone' && b.lean === 'calls')!.n).toBe(1);
     expect(r.recent[0]).toMatchObject({ part: 'afternoon', lean: 'calls', pending: false });
   });
 });

@@ -40,7 +40,7 @@ import type { OptionsChainAggregate } from './provider';
 import { aggregateRatio, percentileRank, putCallRatio, sectorRatios } from './ratio-calculator';
 import { shapeTotals, type ClockBook } from './intraday-profile';
 import { SpikeDetector, type ClockShapes } from './spike-detector';
-import { followThroughNote, leanOf, type SpikeBook } from './spike-outcomes';
+import { followThroughNote, isCrowd, leanOf, type SpikeBook } from './spike-outcomes';
 import { etDateKey, etTimeParts, isTradingDayNow, sessionBounds } from './trading-calendar';
 import { sectorOf } from './universe';
 import { isMarketHours, minutesSinceOpen } from './utils';
@@ -393,9 +393,34 @@ export class FlowEngine {
             putCallRatio: Number(ratio.toFixed(3)),
             createdAt: now,
             followThrough: this.followThroughFor(agg.symbol, ratio, now),
+            breadth: this.sectorBreadth(agg.symbol, ratio, m.asOf),
           }
         : null;
     return { fields, alert };
+  }
+
+  /**
+   * How much of the alerting name's sector is spiking right now — one name, or
+   * the sector at once (spike-outcomes.ts). Counts names holding this session's
+   * data; the alerting name counts itself (its own row is not updated yet).
+   */
+  private sectorBreadth(symbol: string, ratio: number, asOf: number): SpikeAlert['breadth'] {
+    const sector = sectorOf(symbol);
+    if (sector === 'ETF' || sector === 'Unknown') return null;
+    const session = etDateKey(new Date(asOf)).getTime();
+    const puts = leanOf(ratio) === 'puts';
+    let names = 1;
+    let spiking = 1;
+    let sameLean = 1;
+    for (const [other, state] of this.tickers) {
+      const f = state.flow;
+      if (other === symbol || f.sector !== sector || f.dataAsOf <= 0 || etDateKey(new Date(f.dataAsOf)).getTime() !== session) continue;
+      names += 1;
+      if (f.spikeLevel === 'normal') continue;
+      spiking += 1;
+      if (f.putCallRatio > 1 === puts) sameLean += 1;
+    }
+    return { sector, spiking, sameLean, names, crowd: isCrowd(spiking, names) };
   }
 
   /** What past spikes like this one were followed by, when enough are graded (spike-outcomes.ts). */

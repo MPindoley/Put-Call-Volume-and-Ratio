@@ -20,6 +20,7 @@ import { SpikeTableView } from '@/components/ticker/IntradayCards';
 import type { IntradayLearningResponse } from '@/app/api/learning/intraday/route';
 import type { SignalTimingView } from '@/app/api/learning/route';
 import { timingSentence, timingShort, type SignalTiming } from '@/lib/signal-timing';
+import { HORIZON_LABEL, HORIZONS } from '@/lib/spike-outcomes';
 import { cn } from '@/lib/utils';
 
 interface SummaryResponse {
@@ -357,6 +358,57 @@ function TimeOfDayCard(): JSX.Element | null {
               alerts of that kind (time of day × lean) have been graded.
             </p>
           )}
+        </div>
+        <div>
+          <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">
+            One stock, or its sector at once — <Term k="spikeBreadth">lone and sector-wide spikes</Term>, graded apart
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[420px] text-[11px] tnum">
+              <thead className="text-left text-[10px] text-slate-500">
+                <tr>
+                  <th className="py-1 pr-2 font-normal">Spike</th>
+                  {HORIZONS.map((h) => (
+                    <th key={h} className="px-2 py-1 text-right font-normal">
+                      {HORIZON_LABEL[h]}
+                    </th>
+                  ))}
+                  <th className="py-1 pl-2 text-right font-normal">Graded</th>
+                </tr>
+              </thead>
+              <tbody>
+                {spikes.breadth.map((r) => (
+                  <tr key={`${r.kind}-${r.lean}`} className="border-t border-surface-border/50 text-slate-300">
+                    <td className="py-1 pr-2">
+                      <span className="text-slate-200">{r.kind === 'crowd' ? 'Sector-wide' : 'One stock'}</span>{' '}
+                      <span className="text-slate-500">· {r.lean === 'calls' ? 'call-heavy' : 'put-heavy'}</span>
+                    </td>
+                    {HORIZONS.map((h) => {
+                      const c = r.cells[h];
+                      return c.rate === null ? (
+                        <td key={h} className="px-2 py-1 text-right text-slate-600" title="Not enough graded spikes of this kind yet">
+                          —
+                        </td>
+                      ) : (
+                        <td
+                          key={h}
+                          className={cn('px-2 py-1 text-right', Math.abs(c.rate - 0.5) >= 0.05 ? 'font-semibold text-slate-100' : 'text-slate-400')}
+                          title={`Average move the spike's way ${c.avgMove! >= 0 ? '+' : ''}${c.avgMove!.toFixed(2)}% · ${c.n} graded`}
+                        >
+                          {pct(c.rate)}
+                        </td>
+                      );
+                    })}
+                    <td className="py-1 pl-2 text-right text-slate-500">{r.n}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
+            Counted from when this started being recorded; each alert in the feed says which kind it is. A cell fills in at {spikes.minRoot}{' '}
+            graded spikes.
+          </p>
         </div>
       </div>
     </Card>

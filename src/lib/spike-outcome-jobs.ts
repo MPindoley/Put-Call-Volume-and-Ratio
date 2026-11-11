@@ -17,10 +17,12 @@ import { finalizedMetricWhere } from './finalized-reads';
 import type { FlowEngine } from './flow-engine';
 import { AFTER_CLOSE_MS } from './intraday-profile';
 import {
+  breadthTable,
   buildSpikeBook,
   dayPartOf,
   gradeCloses,
   gradeIntraday,
+  isCrowd,
   leanOf,
   spikeTable,
   SPIKE_PARAMS,
@@ -29,6 +31,7 @@ import {
   type PricePoint,
   type SpikeBook,
   type SpikeObs,
+  type BreadthRowView,
   type SpikeTable,
 } from './spike-outcomes';
 import {
@@ -43,6 +46,7 @@ import { sectorOf } from './universe';
 
 const DAY_MS = 86_400_000;
 const BUCKET_MID_MS = 150_000;
+const EMPTY_BOOK: SpikeBook = { cells: new Map(), breadth: new Map(), episodes: 0 };
 /** Alerts older than this that are still ungraded never will be: their prices are gone. */
 const GIVE_UP_DAYS = 12;
 /** How long graded alerts are kept and learned from (history-jobs.ts prunes at the same horizon). */
@@ -212,9 +216,13 @@ interface GradedAlert {
   spy2h: number | null;
   spyClose: number | null;
   spyNext: number | null;
+  sectorSpiking: number | null;
+  sectorNames: number | null;
 }
 
 const GRADED_SELECT = {
+  sectorSpiking: true,
+  sectorNames: true,
   symbol: true,
   createdAt: true,
   putCallRatio: true,
@@ -247,6 +255,7 @@ function toObs(a: GradedAlert, now: Date): SpikeObs {
     ...classify(a),
     move: { m30: a.move30m, h2: a.move2h, close: a.moveClose, next: a.moveNext },
     spy: { m30: a.spy30m, h2: a.spy2h, close: a.spyClose, next: a.spyNext },
+    crowd: a.sectorSpiking !== null && a.sectorNames !== null ? isCrowd(a.sectorSpiking, a.sectorNames) : null,
   };
 }
 
@@ -300,7 +309,7 @@ export interface SpikeReport {
 export async function loadSpikeReport(engine: FlowEngine, symbol: string): Promise<SpikeReport> {
   const sector = sectorOf(symbol);
   const isEtf = sector === 'ETF';
-  const book = engine.spikeBook ?? { cells: new Map(), episodes: 0 };
+  const book = engine.spikeBook ?? EMPTY_BOOK;
   const target = { symbol, sector, isEtf };
   const recent = await tryDb('recent spikes', (db) =>
     db.alert.findMany({
@@ -340,16 +349,19 @@ export interface SpikeSummary {
   pending: number;
   /** All single names together. */
   table: SpikeTable;
+  /** One name against its sector at once: lone and sector-wide spikes, graded apart. */
+  breadth: BreadthRowView[];
 }
 
 /** The Learning page's overview: the all-names table and how much is graded. */
 export async function loadSpikeSummary(engine: FlowEngine): Promise<SpikeSummary> {
-  const book = engine.spikeBook ?? { cells: new Map(), episodes: 0 };
+  const book = engine.spikeBook ?? EMPTY_BOOK;
   const pending = await tryDb('pending spikes', (db) => db.alert.count({ where: { gradeStage: { lt: 2 } } }));
   return {
     episodes: book.episodes,
     minRoot: SPIKE_PARAMS.minRoot,
     pending: pending ?? 0,
     table: spikeTable(book, { isEtf: false }, 'all'),
+    breadth: breadthTable(book),
   };
 }

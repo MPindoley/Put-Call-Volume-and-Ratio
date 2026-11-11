@@ -69,6 +69,23 @@ export const SPIKE_PARAMS = {
   quoteMin: { ticker: 10, sector: 20 },
 } as const;
 
+/**
+ * LONE OR SECTOR-WIDE. A spike in one name while its sector is quiet is news
+ * about that name; the same spike while a tenth of the sector is spiking is
+ * news about the sector. Each alert records how many of its sector's names
+ * were spiking when it fired; it is "sector-wide" from BREADTH.minNames names
+ * and BREADTH.minShare of the sector, and the two kinds are graded apart.
+ */
+export const BREADTH = { minNames: 3, minShare: 0.08 } as const;
+
+/** Sector-wide (true) or one name (false), from the count spiking — this one included — and the sector's size. */
+export function isCrowd(spiking: number, names: number): boolean {
+  return spiking >= BREADTH.minNames && spiking >= Math.ceil(BREADTH.minShare * names);
+}
+
+export const BREADTH_KINDS = ['lone', 'crowd'] as const;
+export type BreadthKind = (typeof BREADTH_KINDS)[number];
+
 /** Morning to 11:00, midday to 14:00, afternoon after (minutes since the 9:30 open). */
 export function dayPartOf(minutesSinceOpen: number): DayPart {
   return minutesSinceOpen < 90 ? 'morning' : minutesSinceOpen < 270 ? 'midday' : 'afternoon';
@@ -204,6 +221,8 @@ export interface SpikeObs {
   lean: Lean;
   move: Record<Horizon, number | null>;
   spy: Record<Horizon, number | null>;
+  /** Sector-wide when it fired (true), one name (false), or not recorded (null/absent). */
+  crowd?: boolean | null;
 }
 
 /** The move in the spike's direction: positive = the price went the way the flow leaned. */
@@ -239,6 +258,8 @@ export interface CellStat {
 
 export interface SpikeBook {
   cells: Map<string, CellStat>;
+  /** Single names only, all times of day together: lone vs sector-wide spikes, keyed `${kind}|${lean}|${horizon}`. */
+  breadth: Map<string, CellStat>;
   /** Episodes behind the book. */
   episodes: number;
 }
@@ -252,25 +273,65 @@ const cellKey = (scope: string, part: DayPart, lean: Lean, h: Horizon): string =
 export function buildSpikeBook(obs: readonly SpikeObs[], halfLifeSessions: number = SPIKE_PARAMS.halfLifeSessions): SpikeBook {
   const episodes = dedupeEpisodes(obs);
   const cells = new Map<string, CellStat>();
-  const add = (key: string, w: number, signed: number): void => {
-    const c = cells.get(key) ?? { n: 0, nEff: 0, hits: 0, move: 0 };
+  const breadth = new Map<string, CellStat>();
+  const add = (into: Map<string, CellStat>, key: string, w: number, signed: number): void => {
+    const c = into.get(key) ?? { n: 0, nEff: 0, hits: 0, move: 0 };
     c.n += 1;
     c.nEff += w;
     c.hits += w * (signed > 0 ? 1 : signed === 0 ? 0.5 : 0);
     c.move += w * signed;
-    cells.set(key, c);
+    into.set(key, c);
   };
   for (const o of episodes) {
     const w = Math.pow(0.5, Math.max(0, o.age) / halfLifeSessions);
     for (const h of HORIZONS) {
       const signed = followThrough(o, h);
       if (signed === null) continue;
-      add(cellKey(ROOT(o.isEtf), o.part, o.lean, h), w, signed);
-      if (!o.isEtf) add(cellKey(`s:${o.sector}`, o.part, o.lean, h), w, signed);
-      add(cellKey(`t:${o.symbol}`, o.part, o.lean, h), w, signed);
+      add(cells, cellKey(ROOT(o.isEtf), o.part, o.lean, h), w, signed);
+      if (!o.isEtf) add(cells, cellKey(`s:${o.sector}`, o.part, o.lean, h), w, signed);
+      add(cells, cellKey(`t:${o.symbol}`, o.part, o.lean, h), w, signed);
+      if (!o.isEtf && o.crowd !== null && o.crowd !== undefined)
+        add(breadth, `${o.crowd ? 'crowd' : 'lone'}|${o.lean}|${h}`, w, signed);
     }
   }
-  return { cells, episodes: episodes.length };
+  return { cells, breadth, episodes: episodes.length };
+}
+
+export interface BreadthRowView {
+  kind: BreadthKind;
+  lean: Lean;
+  n: number;
+  cells: Record<Horizon, SpikeCellView>;
+}
+
+/**
+ * Follow-through of lone against sector-wide spikes (single names, every time
+ * of day together), each shrunk from a coin flip; a cell shows nothing below
+ * minRoot graded spikes.
+ */
+export function breadthTable(
+  book: SpikeBook,
+  params: { prior: { all: number }; minRoot: number } = SPIKE_PARAMS,
+): BreadthRowView[] {
+  const rows: BreadthRowView[] = [];
+  for (const kind of BREADTH_KINDS) {
+    for (const lean of LEANS) {
+      const cells = {} as Record<Horizon, SpikeCellView>;
+      let n = 0;
+      for (const h of HORIZONS) {
+        const c = book.breadth.get(`${kind}|${lean}|${h}`);
+        const enough = c !== undefined && c.n >= params.minRoot;
+        cells[h] = {
+          rate: enough ? (c.hits + params.prior.all * 0.5) / (c.nEff + params.prior.all) : null,
+          avgMove: enough ? c.move / (c.nEff + params.prior.all) : null,
+          n: c?.n ?? 0,
+        };
+        n = Math.max(n, c?.n ?? 0);
+      }
+      rows.push({ kind, lean, n, cells });
+    }
+  }
+  return rows;
 }
 
 export interface SpikeTarget {
