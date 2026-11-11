@@ -39,6 +39,7 @@ import { regimeConfigVersion } from './regime';
 import { loadBenchmarkResolver } from './sector-benchmarks';
 import { NOT_SEEDED } from './seed-guard';
 import { TERMINAL_QUIET_SESSIONS } from './signal-jobs';
+import type { ComboBook } from './signal-combos';
 import { TIMING_HORIZONS, timingDeepest, type LevelTiming, type TimingHorizon } from './signal-timing';
 import {
   DIRECTIONAL_SIGNALS,
@@ -358,6 +359,8 @@ export function bookFromRow(row: { version: string; nodes: unknown; rowsUsed: nu
 export interface TimingBooks {
   asOf: string;
   books: Record<TimingHorizon, EdgeBook>;
+  /** Signals together (signal-combos.ts), built the same night; null on a row from before it existed. */
+  combos: ComboBook | null;
 }
 
 let timingCache: { version: string; at: number; value: TimingBooks | null } | null = null;
@@ -385,7 +388,7 @@ export async function loadTimingBooks(db: PrismaClient, cfgIn?: AnalyticsConfig)
     for (const h of TIMING_HORIZONS) {
       books[h] = bookFromRow({ version, nodes: stored[String(h)], rowsUsed: 0, rowsUnbased: 0 });
     }
-    value = { asOf: iso(row.asOf), books };
+    value = { asOf: iso(row.asOf), books, combos: (row.combos as ComboBook | null) ?? null };
   }
   timingCache = { version, at: Date.now(), value };
   return value;

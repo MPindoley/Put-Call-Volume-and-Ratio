@@ -3,6 +3,7 @@ import { getAnalyticsConfig } from '@/lib/analytics-config';
 import { tryDb } from '@/lib/db';
 import { summarizeBook, LEARNING_PARAMS } from '@/lib/learning';
 import { bookFromRow, currentLearningVersion, loadTimingBooks } from '@/lib/learning-data';
+import { COMBO_PARAMS, comboViews } from '@/lib/signal-combos';
 import { timingAt, TIMING_PARAMS, type SignalTiming } from '@/lib/signal-timing';
 
 export const dynamic = 'force-dynamic';
@@ -21,6 +22,7 @@ export interface SignalTimingView {
  *
  * `timing` is the same book rebuilt at the 5-, 10- and 20-session windows
  * (signal-timing.ts), keyed "signalType|direction"; null until it has been built.
+ * `combos` compares signals firing together with each alone (signal-combos.ts).
  *
  * `learning: null` means no book exists yet (nothing graded under this version).
  */
@@ -30,7 +32,7 @@ export async function GET(): Promise<NextResponse> {
   const data = await tryDb('learning summary', async (db) => {
     const latest = await db.edgeBook.findFirst({ where: { version }, orderBy: { asOf: 'desc' } });
     const books = await db.edgeBook.count({ where: { version } });
-    if (!latest) return { version, books, learning: null, timing: null };
+    if (!latest) return { version, books, learning: null, timing: null, combos: null };
     const signals = summarizeBook(bookFromRow(latest));
     const timingBooks = await loadTimingBooks(db, cfg);
     let timing: { asOf: string; minGraded: number; signals: Record<string, SignalTimingView> } | null = null;
@@ -59,6 +61,7 @@ export async function GET(): Promise<NextResponse> {
         signals,
       },
       timing,
+      combos: timingBooks?.combos ? { minGraded: COMBO_PARAMS.minGraded, pairs: comboViews(timingBooks.combos) } : null,
     };
   });
   if (data === null) return NextResponse.json({ error: 'database unavailable' }, { status: 503 });

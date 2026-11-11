@@ -419,6 +419,9 @@ model SignalTiming {
   asOf      DateTime
   /// { "5": nodes, "10": nodes, "20": nodes } — node statistics as in EdgeBook.nodes.
   books     Json
+  /// Signals together (signal-combos.ts): per pair of signal types and direction,
+  /// statistics for days both fired and days each fired without the other.
+  combos    Json?
   updatedAt DateTime @default(now())
 }
 

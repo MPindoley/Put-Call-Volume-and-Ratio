@@ -12,6 +12,7 @@ import { prisma } from './db';
 import { loadTimingBooks, loadTrackRecord } from './learning-data';
 import { refreshEdgeBooks } from './learning-jobs';
 import { regimeConfigVersion } from './regime';
+import type { ComboView } from './signal-combos';
 import { timingAt } from './signal-timing';
 import { thresholdVersion } from './signals';
 
@@ -62,7 +63,7 @@ describe.skipIf(!RUN)('signal timing (RUN_DB_TESTS=1)', () => {
         close,
         final: true,
         historicalCloseOnly: false,
-        ...(oi ? { putOI: 1000, callOI: 1000 } : {}),
+        ...(oi ? { putOI: 1000, callOI: 1000, spikeBaselineDays: 20 } : {}),
       });
       metrics.push(row('SPY', 500, false)); // flat market → excess = raw
       metrics.push(row('XLK', 200, false));
@@ -92,7 +93,9 @@ describe.skipIf(!RUN)('signal timing (RUN_DB_TESTS=1)', () => {
       regimeTrend: 'pos',
       regimeGamma: 'pos',
     };
-    const sigs = [];
+    // After 10 sessions: 4 in 5 right on the days a second signal agreed, a coin flip on the others.
+    const ret10 = (i: number): number => ((i % 2 === 0 ? i % 10 !== 0 : i % 4 === 1) ? 0.02 : -0.02);
+    const sigs: Record<string, unknown>[] = [];
     for (let i = 0; i < 40; i++) {
       for (const symbol of ['AAPL', 'MSFT']) {
         sigs.push({
@@ -101,14 +104,17 @@ describe.skipIf(!RUN)('signal timing (RUN_DB_TESTS=1)', () => {
           firedOn: days[i]!,
           scored: true,
           fwd5ExSpy: i % 5 !== 0 ? 0.02 : -0.02,
-          fwd10ExSpy: i % 5 < 3 ? 0.02 : -0.02,
+          fwd10ExSpy: ret10(i),
           fwd20ExSpy: i % 2 === 0 ? 0.02 : -0.02,
         });
+        // On even sessions a volume spike fired the same way too: those days go better.
+        if (i % 2 === 0)
+          sigs.push({ ...stamp, signalType: 'spike_alert', symbol, firedOn: days[i]!, scored: true, fwd10ExSpy: ret10(i) });
       }
     }
     // Tonight's signal on AAPL: fired on the latest session, not graded yet.
     sigs.push({ ...stamp, symbol: 'AAPL', firedOn: days[N - 1]!, scored: false });
-    await db.signalLog.createMany({ data: sigs });
+    await db.signalLog.createMany({ data: sigs as never });
   });
   afterAll(async () => {
     if (!RUN) return;
@@ -160,6 +166,13 @@ describe.skipIf(!RUN)('signal timing (RUN_DB_TESTS=1)', () => {
     };
     expect(body.timing?.signals['pc_extreme|bullish']?.all.verdict).toBe('fast');
     expect(body.timing?.signals['pc_extreme|bullish']?.regimes['pos|pos']?.verdict).toBe('fast');
+
+    // Signals together: the put/call signal with a volume spike agreeing, against the put/call signal alone.
+    const combos = ((await (await learningGET()).json()) as { combos: { pairs: ComboView[] } | null }).combos!;
+    const pair = combos.pairs.find((c) => c.a === 'pc_extreme' && c.b === 'spike_alert' && c.direction === 'bullish')!;
+    expect(pair).toMatchObject({ n: 40, nA: 40, nB: 0, verdict: 'stronger' });
+    expect(pair.together!).toBeGreaterThan(pair.aAlone + 0.05);
+    expect(pair.bAlone).toBe(0); // the spike never fired without the put/call signal here
 
     const record = await loadTrackRecord(db, 'AAPL');
     expect(record.learned).toHaveLength(1);

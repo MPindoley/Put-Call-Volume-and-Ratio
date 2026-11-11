@@ -69,6 +69,13 @@ export const GLOSSARY = {
     what: "Contracts traded in the half hour, as a percentage of this name's 20-day average daily volume.",
     read: 'The usual bars add up to 100%. Session bars add up to more on a busy day and less on a quiet one.',
   },
+  signalsTogether: {
+    term: 'Signals together',
+    what: 'Whether two signals pointing the same way on a stock have done better than either signal on its own.',
+    how: 'For each pair and direction: the learned edge on days both fired, on days only the first fired, and on days only the second fired — same graded signals, base rates and recency weights as the table above. The together figure starts from the average of the two alone figures and moves only as far as its own evidence earns.',
+    read: '“Stronger together” = worth more than the better of the two alone, by more than 2 points and its margin of error. “No clear difference” = company has not added anything measurable.',
+    caveat: 'Fifteen pairs in two directions are compared at once, so an isolated result deserves suspicion until it holds over time.',
+  },
   signalTiming: {
     term: 'Plays out over',
     what: 'How long this signal has taken to work: its learned edge when the same signals are graded after 5, 10 and 20 sessions.',

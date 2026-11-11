@@ -787,6 +787,31 @@ lean.
 **If reversed:** an alert cannot tell a stock-specific spike from a
 sector-wide one, and nothing shows which names' flow tends to move first.
 
+### 5.22 Signals together are measured, not assumed (`signal-combos.ts`)
+The lean combines co-firing signals by a fixed rule (signed sum ÷ √m, §5.7).
+Whether two signals agreeing on a name is actually worth more than either
+alone is now measured: for every pair of signal types and each direction, the
+edge on days both fired the same way, on days only the first fired, and on
+days only the second fired — the same graded signals, regime-matched base
+rates and recency weights as the edge book, built the same night and stored
+beside the timing books (`SignalTiming.combos`).
+
+- **The neutral guess is "company adds nothing".** The together edge is
+  shrunk toward the average of the two alone edges (prior 40), not toward
+  zero and not toward the better one — so a handful of co-firings cannot
+  manufacture a synergy, and picking the better of two noisy numbers is not
+  built into the baseline.
+- **A verdict has to clear the better (or fall below the worse) alone edge**
+  by 2 points and the together edge's own standard error, after 30 days
+  together. Fifteen pairs in two directions are compared at once; the page
+  says so.
+- **The lean's rule is not changed.** It is the rule self-grading holds to
+  account; the table shows what it assumes for each pair beside what was
+  observed, which is the evidence a future change to it would need.
+
+**If reversed:** "two signals agree" is treated as stronger evidence by rule,
+with nothing checking whether it is.
+
 ---
 
 ## 6. Cross-cutting invariants (the short list a reviewer should protect)

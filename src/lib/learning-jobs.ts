@@ -16,7 +16,15 @@ import { getAnalyticsConfig } from './analytics-config';
 import { tryDb } from './db';
 import { finalizedMetricWhere } from './finalized-reads';
 import type { FlowEngine } from './flow-engine';
-import { establishedCounts, LEARNING_PARAMS, type Calibration, type EdgeBook, type Level, type NodeStats } from './learning';
+import {
+  buildBaseRates,
+  establishedCounts,
+  LEARNING_PARAMS,
+  type Calibration,
+  type EdgeBook,
+  type Level,
+  type NodeStats,
+} from './learning';
 import {
   baseRateSweep,
   bookAt,
@@ -34,6 +42,7 @@ import {
   type LearningInputs,
   type LearningRows,
 } from './learning-data';
+import { buildComboBook, compactComboBook } from './signal-combos';
 import { TIMING_HORIZONS } from './signal-timing';
 import { isTradingDay } from './trading-calendar';
 import type { PrismaClient } from '@prisma/client';
@@ -129,8 +138,8 @@ export async function refreshSignalTiming(db: PrismaClient, rows: LearningRows, 
   const asOf = rows.sessions[lastIdx];
   if (asOf === undefined) return false;
   const { version } = canonical;
-  const stored = await db.signalTiming.findUnique({ where: { version }, select: { asOf: true } });
-  if (stored && iso(stored.asOf) === asOf) return false;
+  const stored = await db.signalTiming.findUnique({ where: { version }, select: { asOf: true, combos: true } });
+  if (stored && iso(stored.asOf) === asOf && stored.combos !== null) return false;
 
   const books: Record<string, Record<string, NodeStats>> = {};
   for (const h of TIMING_HORIZONS) {
@@ -138,10 +147,24 @@ export async function refreshSignalTiming(db: PrismaClient, rows: LearningRows, 
     const inputs = h === canonical.params.horizon ? canonical : deriveLearningInputs(rows, { ...LEARNING_PARAMS, horizon: h });
     books[String(h)] = compactNodes(bookAt(inputs, lastIdx).nodes);
   }
+  // Signals together (signal-combos.ts), on the canonical window's evidence and base rates.
+  const base = buildBaseRates(canonical.days, lastIdx, canonical.minTickerDays, canonical.cohortOf);
+  const combos = compactComboBook(
+    buildComboBook(
+      canonical.evidence.map((e) => ({ ...e, base: base(e.signalType, e.symbol, e.cell, e.direction) })),
+      lastIdx,
+      canonical.params.halfLifeSessions,
+    ),
+  );
   await db.$transaction([
     db.signalTiming.deleteMany({}), // other versions' rows mean nothing now
     db.signalTiming.create({
-      data: { version, asOf: new Date(`${asOf}T00:00:00Z`), books: books as unknown as Prisma.InputJsonValue },
+      data: {
+        version,
+        asOf: new Date(`${asOf}T00:00:00Z`),
+        books: books as unknown as Prisma.InputJsonValue,
+        combos: combos as unknown as Prisma.InputJsonValue,
+      },
     }),
   ]);
   invalidateTimingBooks();

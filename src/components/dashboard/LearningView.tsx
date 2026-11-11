@@ -19,6 +19,7 @@ import { Term } from '@/components/ui/term';
 import { SpikeTableView } from '@/components/ticker/IntradayCards';
 import type { IntradayLearningResponse } from '@/app/api/learning/intraday/route';
 import type { SignalTimingView } from '@/app/api/learning/route';
+import type { ComboView } from '@/lib/signal-combos';
 import { timingSentence, timingShort, type SignalTiming } from '@/lib/signal-timing';
 import { HORIZON_LABEL, HORIZONS } from '@/lib/spike-outcomes';
 import { cn } from '@/lib/utils';
@@ -35,6 +36,8 @@ interface SummaryResponse {
   } | null;
   /** The book at the 5-, 10- and 20-session windows, keyed "signalType|direction"; null until built. */
   timing: { asOf: string; minGraded: number; signals: Record<string, SignalTimingView> } | null;
+  /** Signals firing together against each alone (signal-combos.ts); null until built. */
+  combos: { minGraded: number; pairs: ComboView[] } | null;
 }
 
 const SIGNAL_NAMES: Record<string, string> = {
@@ -98,6 +101,7 @@ export function LearningView(): JSX.Element {
       <CoverageCard />
 
       <LearnedCard data={summary.data} loading={summary.isLoading} />
+      {summary.data?.learning && <CombosCard combos={summary.data.combos} />}
 
       {report.data && <SelfGradeCard c={report.data.selfGrade} />}
       <TimeOfDayCard />
@@ -517,6 +521,86 @@ function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loa
             demonstrated edge. &ldquo;Plays out over&rdquo; compares the same signals graded after 5, 10 and 20 sessions. Click a signal to
             see its edge at each window and by market regime.
             {l.rowsUnbased > 0 && ` ${l.rowsUnbased} graded signals had no base rate to compare against and were left out rather than guessed.`}
+          </p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+const COMBO_VERDICT: Record<ComboView['verdict'], { label: string; cls: string }> = {
+  stronger: { label: 'Stronger together', cls: 'font-semibold text-slate-100' },
+  weaker: { label: 'Weaker together', cls: 'font-semibold text-slate-100' },
+  same: { label: 'No clear difference', cls: 'text-slate-400' },
+  learning: { label: 'Learning', cls: 'text-slate-500' },
+};
+
+/** Signals together (signal-combos.ts): two signals agreeing on a stock, against each on its own. */
+function CombosCard({ combos }: { combos: SummaryResponse['combos'] }): JSX.Element {
+  const name = (t: string): string => SIGNAL_NAMES[t] ?? t;
+  return (
+    <Card>
+      <CardHeader title="Signals together" />
+      {!combos || combos.pairs.length === 0 ? (
+        <p className="p-4 text-xs text-slate-400">
+          {combos
+            ? 'No two signals have fired on the same stock, the same day and the same way among the graded signals yet.'
+            : 'Built with the next nightly learning run.'}
+        </p>
+      ) : (
+        <div className="overflow-x-auto p-4">
+          <table className="w-full min-w-[640px] text-xs tnum">
+            <thead className="text-left text-[10px] uppercase tracking-wider text-slate-500">
+              <tr>
+                <th className="py-1 font-normal">Both pointing the same way</th>
+                <th className="py-1 text-right font-normal">Days together</th>
+                <th className="py-1 text-right font-normal">
+                  <Term k="signalsTogether">Together</Term>
+                </th>
+                <th className="py-1 text-right font-normal">First alone</th>
+                <th className="py-1 text-right font-normal">Second alone</th>
+                <th className="py-1 text-right font-normal" title="What the scanner's lean assumes when it combines the two: signed sum ÷ √2">
+                  As the lean combines them
+                </th>
+                <th className="py-1 pl-4 font-normal">Verdict</th>
+              </tr>
+            </thead>
+            <tbody>
+              {combos.pairs.map((c) => (
+                <tr key={`${c.a}|${c.b}|${c.direction}`} className="border-t border-surface-border/50 text-slate-300">
+                  <td className="py-1.5">
+                    {name(c.a)} + {name(c.b)} <span className={c.direction === 'bullish' ? 'text-bullish' : 'text-bearish'}>{c.direction}</span>
+                  </td>
+                  <td className="py-1.5 text-right">{c.n}</td>
+                  <td className="py-1.5 text-right">
+                    {c.together === null ? (
+                      <span className="text-slate-600">
+                        {c.n}/{combos.minGraded}
+                      </span>
+                    ) : (
+                      <>
+                        {pts(c.together)} <span className="text-slate-500">± {(c.se * 100).toFixed(1)}</span>
+                      </>
+                    )}
+                  </td>
+                  <td className="py-1.5 text-right text-slate-400" title={`${c.nA} days without the second`}>
+                    {pts(c.aAlone)}
+                  </td>
+                  <td className="py-1.5 text-right text-slate-400" title={`${c.nB} days without the first`}>
+                    {pts(c.bAlone)}
+                  </td>
+                  <td className="py-1.5 text-right text-slate-500">{pts(c.assumed)}</td>
+                  <td className={cn('py-1.5 pl-4', COMBO_VERDICT[c.verdict].cls)}>{COMBO_VERDICT[c.verdict].label}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+            Points above the ordinary-day rate, as in the table above. &ldquo;Together&rdquo; is the days both signals fired on a stock pointing the
+            same way; &ldquo;alone&rdquo; is the days one fired without the other. A pair is called stronger or weaker only when the difference
+            clears 2 points and its own margin of error, after {combos.minGraded} days together. The scanner&apos;s lean keeps its fixed way of
+            combining signals — the last number column — because that is what the site grades itself on; this shows whether that assumption
+            holds.
           </p>
         </div>
       )}
