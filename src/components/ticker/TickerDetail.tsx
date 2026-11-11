@@ -6,9 +6,10 @@
  */
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useMemo, type MouseEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardHeader } from '@/components/ui/card';
+import { CollapsibleSection, useSections, type Sections } from '@/components/ui/collapsible';
 import { SpikeBadge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ConvictionCell, QUOTE_STALE_MS } from '@/components/ui/conviction';
@@ -21,6 +22,7 @@ import type { CalibrationView, HorizonKey } from '@/lib/projection-history';
 import { ProjectionCard, type ProjectionCoverage } from './ProjectionCard';
 import { standing } from '@/lib/own-normal';
 import { timingSentence, timingShort } from '@/lib/signal-timing';
+import { sectionHeadlines, type SectionId } from '@/lib/ticker-summary';
 import { IntradayCards } from './IntradayCards';
 import { RelationshipsCard } from './RelationshipsCard';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
@@ -46,28 +48,31 @@ interface DetailResponse {
 }
 
 interface SectionDef {
-  id: string;
-  label: string;
+  id: SectionId;
+  title: string;
 }
 
-/** Which sections this ticker has, in reading order (cards with nothing to show are skipped). */
+/** Which sections this ticker has, in reading order (sections with nothing to show are skipped). */
 function sectionsFor(data: DetailResponse | undefined): SectionDef[] {
   const out: SectionDef[] = [
-    { id: 'projection', label: 'Projection' },
-    { id: 'overview', label: 'Flow' },
+    { id: 'projection', title: 'Projection' },
+    { id: 'overview', title: 'Flow now' },
   ];
   if (!data) return out;
   const { flow } = data;
-  if (flow.analytics || flow.iv30 !== null) out.push({ id: 'volatility', label: 'Volatility & positioning' });
-  out.push({ id: 'relative', label: 'Sector-relative' });
-  if (data.trackRecord) out.push({ id: 'track-record', label: 'Track record' });
-  if (flow.eventGauge) out.push({ id: 'event', label: 'Event move' });
-  if (flow.idiosyncraticMoves && flow.idiosyncraticMoves.length > 0) out.push({ id: 'idiosyncratic', label: 'Idiosyncratic' });
-  out.push({ id: 'time-of-day', label: 'Time of day' });
-  out.push({ id: 'relationships', label: 'Relationships' });
-  out.push({ id: 'history', label: 'History' });
+  if (flow.analytics || flow.iv30 !== null) out.push({ id: 'volatility', title: 'Volatility & positioning' });
+  out.push({ id: 'relative', title: 'Versus its sector' });
+  if (data.trackRecord) out.push({ id: 'track-record', title: 'Track record' });
+  if (flow.eventGauge) out.push({ id: 'event', title: 'Event move' });
+  if (flow.idiosyncraticMoves && flow.idiosyncraticMoves.length > 0) out.push({ id: 'idiosyncratic', title: 'Unusual moves' });
+  out.push({ id: 'time-of-day', title: 'Time of day' });
+  out.push({ id: 'relationships', title: 'Relationships' });
+  out.push({ id: 'history', title: 'Stored snapshots' });
   return out;
 }
+
+/** Remembered per browser, not per stock: the layout you leave is the layout the next stock opens with. */
+const SECTIONS_KEY = 'ticker.sections';
 
 export function TickerDetail({ symbol }: { symbol: string }): JSX.Element {
   const query = useQuery({
@@ -86,17 +91,27 @@ export function TickerDetail({ symbol }: { symbol: string }): JSX.Element {
   // The streamed row (socket) is fresher than the 15s detail poll — prefer it for the header.
   const liveRow = useFlowStore((s) => s.rows[symbol]);
   const headerFlow = liveRow ?? query.data?.flow ?? null;
-  const sections = sectionsFor(query.data);
+  const defs = useMemo(() => sectionsFor(query.data), [query.data]);
+  const sections = useSections(SECTIONS_KEY);
+
+  // In-page links ("How it was learned →") open the section they point at, not just scroll to its closed bar.
+  const openLinkedSection = (e: MouseEvent<HTMLDivElement>): void => {
+    const link = (e.target as HTMLElement).closest('a[href^="#"]');
+    const id = link?.getAttribute('href')?.slice(1);
+    if (!id || !defs.some((d) => d.id === id)) return;
+    e.preventDefault();
+    sections.reveal(id);
+  };
 
   return (
-    <div>
-      <TickerHeader symbol={symbol} flow={headerFlow} sections={query.data ? sections : []} />
+    <div onClick={openLinkedSection}>
+      <TickerHeader symbol={symbol} flow={headerFlow} defs={query.data ? defs : []} sections={sections} />
       <div className="mx-auto max-w-7xl px-4 pb-8 pt-4 lg:px-6">
         {query.isLoading ? (
-          <div className="grid gap-3 xl:grid-cols-12">
-            <Skeleton className="h-40 w-full xl:col-span-7" />
-            <Skeleton className="h-40 w-full xl:col-span-5" />
-            <Skeleton className="h-64 w-full xl:col-span-7" />
+          <div className="space-y-2">
+            {Array.from({ length: 8 }, (_, i) => (
+              <Skeleton key={i} className="h-10 w-full" />
+            ))}
           </div>
         ) : query.isError || !query.data ? (
           <p className="mt-6 text-sm text-slate-400">
@@ -107,7 +122,7 @@ export function TickerDetail({ symbol }: { symbol: string }): JSX.Element {
                 : 'Failed to load ticker data — retrying automatically.'}
           </p>
         ) : (
-          <TickerBody data={query.data} />
+          <TickerBody data={query.data} defs={defs} sections={sections} />
         )}
       </div>
     </div>
@@ -134,58 +149,26 @@ function HeaderStat({
 }
 
 /**
- * Highlights the section nav entry for whichever section is at the top of the
- * view — or the last one once the page is scrolled to the bottom, where short
- * trailing sections can never reach the top.
- */
-function useActiveSection(ids: string[]): string | null {
-  const [active, setActive] = useState<string | null>(null);
-  const key = ids.join(',');
-  useEffect(() => {
-    const els = key
-      .split(',')
-      .map((id) => document.getElementById(id))
-      .filter((el): el is HTMLElement => el !== null);
-    if (els.length === 0) return;
-    const scroller = document.querySelector('main');
-    const atBottom = (): boolean => !!scroller && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4;
-    const visible = new Map<string, boolean>();
-    const pick = (): void => {
-      if (atBottom()) {
-        setActive(els[els.length - 1]!.id);
-        return;
-      }
-      const first = els.find((el) => visible.get(el.id));
-      if (first) setActive(first.id);
-    };
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) visible.set(e.target.id, e.isIntersecting);
-        pick();
-      },
-      { rootMargin: '-160px 0px -55% 0px' },
-    );
-    els.forEach((el) => io.observe(el));
-    scroller?.addEventListener('scroll', pick, { passive: true });
-    return () => {
-      io.disconnect();
-      scroller?.removeEventListener('scroll', pick);
-    };
-  }, [key]);
-  return active;
-}
-
-/**
  * Sticky page header: where you are (Scanner › sector › symbol), the live
  * price and the numbers you came for (learned lean, P/C, unusual activity,
- * IV), pin-to-scanner, and a jump bar for the sections below.
+ * IV), pin-to-scanner, and a bar that opens any section below (the open ones
+ * are lit) or opens and closes them all.
  */
-function TickerHeader({ symbol, flow, sections }: { symbol: string; flow: TickerFlow | null; sections: SectionDef[] }): JSX.Element {
+function TickerHeader({
+  symbol,
+  flow,
+  defs,
+  sections,
+}: {
+  symbol: string;
+  flow: TickerFlow | null;
+  defs: SectionDef[];
+  sections: Sections;
+}): JSX.Element {
   const router = useRouter();
   const pinned = useFlowStore((s) => s.pinned.includes(symbol));
   const togglePin = useFlowStore((s) => s.togglePin);
   const setSectorFilter = useFlowStore((s) => s.setSectorFilter);
-  const active = useActiveSection(sections.map((s) => s.id));
 
   const live = flow?.livePrice ?? null;
   const liveStale = flow?.livePriceAt != null && Date.now() - flow.livePriceAt > QUOTE_STALE_MS;
@@ -256,7 +239,7 @@ function TickerHeader({ symbol, flow, sections }: { symbol: string; flow: Ticker
           {flow && (
             <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
               <HeaderStat label="Learned lean" term="conviction" title="Signals from the latest session, weighted by how well each has actually worked — see Track record">
-                <a href="#track-record" className="hover:opacity-80">
+                <a href="#track-record" className="hover:opacity-80" title="Open the track record">
                   <ConvictionCell row={flow} />
                 </a>
               </HeaderStat>
@@ -309,20 +292,34 @@ function TickerHeader({ symbol, flow, sections }: { symbol: string; flow: Ticker
           </button>
         </div>
 
-        <nav className="-mb-px mt-2 flex gap-5 overflow-x-auto text-xs" aria-label="Sections">
-          {sections.map((s) => (
-            <a
-              key={s.id}
-              href={`#${s.id}`}
-              className={cn(
-                'whitespace-nowrap border-b-2 pb-2 pt-1',
-                active === s.id ? 'border-blue-500 text-slate-100' : 'border-transparent text-slate-500 hover:text-slate-300',
-              )}
-            >
-              {s.label}
-            </a>
-          ))}
-        </nav>
+        <div className="-mb-px mt-2 flex items-end gap-4 text-xs">
+          <nav className="flex min-w-0 flex-1 gap-5 overflow-x-auto" aria-label="Sections">
+            {defs.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => sections.reveal(d.id)}
+                title={sections.isOpen(d.id) ? `Go to ${d.title}` : `Open ${d.title}`}
+                className={cn(
+                  'whitespace-nowrap border-b-2 pb-2 pt-1',
+                  sections.isOpen(d.id) ? 'border-blue-500 text-slate-100' : 'border-transparent text-slate-500 hover:text-slate-300',
+                )}
+              >
+                {d.title}
+              </button>
+            ))}
+          </nav>
+          {defs.length > 0 && (
+            <div className="flex shrink-0 gap-3 pb-2 text-slate-500">
+              <button type="button" className="hover:text-slate-300" onClick={() => sections.setAll(defs.map((d) => d.id), true)}>
+                Open all
+              </button>
+              <button type="button" className="hover:text-slate-300" onClick={() => sections.setAll(defs.map((d) => d.id), false)}>
+                Close all
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -347,7 +344,7 @@ function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
   return (
     <Card>
       <CardHeader title="Volatility & Positioning" />
-      <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4 xl:grid-cols-7">
         <Stat label="IV30" term="iv30" value={flow.iv30 !== null ? `${flow.iv30.toFixed(1)}` : '—'} />
         <Stat
           label="IV rank"
@@ -422,6 +419,8 @@ function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
         )}
       </div>
 
+      {/* Side by side on a wide screen when both exist; either alone takes the full width. */}
+      <div className="xl:grid xl:auto-cols-fr xl:grid-flow-col xl:divide-x xl:divide-surface-border">
       {a && a.topStrikes.length > 0 && (
         <div className="border-t border-surface-border px-4 py-3">
           <p className="mb-2 text-[10px] uppercase tracking-wider text-slate-500">
@@ -466,6 +465,7 @@ function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
           </div>
         </div>
       )}
+      </div>
     </Card>
   );
 }
@@ -763,8 +763,12 @@ function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackReco
   return (
     <Card>
       <CardHeader title={`Track record — what the app has learned (${record.horizon}-session excess vs SPY)`} />
-      <div className="space-y-4 px-4 pb-4 pt-3">
-        {record.note && <p className="text-[11px] text-slate-500">{record.note}</p>}
+      <div className="px-4 pb-4 pt-3">
+        <p className="mb-3 text-[11px] text-slate-500">
+          What the app has learned about this stock&apos;s signals, graded on how the stock did against SPY over the next{' '}
+          {record.horizon} sessions.{record.note ? ` ${record.note}` : ''}
+        </p>
+        <div className="grid grid-cols-1 gap-x-10 gap-y-4 xl:grid-cols-2">
 
         {record.learned.length > 0 && (
           <div>
@@ -843,6 +847,7 @@ function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackReco
           </div>
         )}
 
+        <div className="space-y-4">
         <div>
           <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">This stock&apos;s own record (raw)</p>
           {record.bySignal.length === 0 ? (
@@ -897,16 +902,10 @@ function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackReco
             </div>
           </div>
         )}
+        </div>
+        </div>
       </div>
     </Card>
-  );
-}
-
-function Section({ id, children }: { id: string; children: ReactNode }): JSX.Element {
-  return (
-    <section id={id} className="scroll-mt-40">
-      {children}
-    </section>
   );
 }
 
@@ -922,140 +921,116 @@ const TIMING_LEVEL: Record<string, string> = {
 };
 
 /**
- * Two columns on wide screens: the live read on the left (overview, vol &
- * positioning, sector-relative), what the app has learned and event context on
- * the right; stored history full-width underneath. One column below xl.
+ * The page body: one drop-down section per topic, each bar carrying its
+ * headline so the closed page already says what the stock is doing. Sections
+ * open in place at full width.
  */
-function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
+function TickerBody({ data, defs, sections }: { data: DetailResponse; defs: SectionDef[]; sections: Sections }): JSX.Element {
   const { flow, history } = data;
   // 5-minute figures need two snapshots at least a minute apart; until then they are unmeasured, not zero.
   const measured = flow.flowWindowMs !== null;
+  const headlines = sectionHeadlines({
+    flow,
+    projection: data.projection,
+    calibration: data.calibration,
+    trackRecord: data.trackRecord,
+    historyCount: history.length,
+  });
+  const content: Record<SectionId, ReactNode> = {
+    projection: (
+      <ProjectionCard flow={flow} projection={data.projection} calibration={data.calibration} coverage={data.projectionCoverage} />
+    ),
+    overview: (
+      <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4 xl:grid-cols-8">
+        <Stat
+          label="Put/Call ratio (5m)"
+          term="putCallRatio"
+          value={formatRatio(flow.putCallRatio)}
+          className={flow.putCallRatio > 1 ? 'text-bearish' : 'text-bullish'}
+        />
+        <Stat label="Puts per 5m / session" term="putsCalls5m" value={`${measured ? formatCompact(flow.putVolume) : '—'} / ${formatCompact(flow.sessionPutVolume)}`} />
+        <Stat label="Calls per 5m / session" term="putsCalls5m" value={`${measured ? formatCompact(flow.callVolume) : '—'} / ${formatCompact(flow.sessionCallVolume)}`} />
+        <Stat label="Premium per 5m" term="premium5m" value={measured ? formatPremium(flow.putPremium + flow.callPremium) : '—'} />
+        <Stat
+          label="Chain price (delayed)"
+          term="chainPrice"
+          value={flow.underlyingPrice > 0 ? `$${flow.underlyingPrice.toFixed(2)}` : '—'}
+          className={flow.priceChangePct >= 0 ? 'text-bullish' : 'text-bearish'}
+        />
+        <Stat label="Vol vs expected" term="volVsExpected" value={`${flow.volumeVsExpected.toFixed(1)}×`} />
+        <Stat
+          label="Net flow per 5m"
+          term="netFlow"
+          value={measured ? `${flow.netFlow > 0 ? '+' : ''}${formatCompact(flow.netFlow)}` : '—'}
+          className={measured ? (flow.netFlow > 0 ? 'text-bullish' : flow.netFlow < 0 ? 'text-bearish' : undefined) : 'text-slate-600'}
+        />
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-slate-500">P/C — last 30 min</p>
+          <div className="mt-1">
+            <Sparkline points={flow.ratioSparkline} />
+          </div>
+        </div>
+      </div>
+    ),
+    volatility: <VolatilityCard flow={flow} />,
+    relative: <SectorRelativeCard flow={flow} />,
+    'track-record': <TrackRecordCard flow={flow} record={data.trackRecord} />,
+    event: <EventGaugeCard flow={flow} />,
+    idiosyncratic: <IdiosyncraticCard flow={flow} />,
+    'time-of-day': <IntradayCards symbol={flow.symbol} />,
+    relationships: <RelationshipsCard symbol={flow.symbol} />,
+    history:
+      history.length === 0 ? (
+        <p className="py-6 text-center text-xs text-slate-500">
+          No stored history — connect a database (DATABASE_URL) to accumulate snapshots for backtesting.
+        </p>
+      ) : (
+        <div className="max-h-80 overflow-auto">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-surface-raised text-left text-[10px] uppercase tracking-wider text-slate-500">
+              <tr>
+                <th className="px-3 py-1.5">5-minute bucket (data time)</th>
+                <th className="px-3 py-1.5 text-right">Puts</th>
+                <th className="px-3 py-1.5 text-right">Calls</th>
+                <th className="px-3 py-1.5 text-right">P/C</th>
+                <th className="px-3 py-1.5 text-right">Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.slice(-100).reverse().map((h) => (
+                <tr key={h.bucketStart} className="border-t border-surface-border/50 text-slate-300">
+                  <td className="px-3 py-1">{new Date(h.bucketStart).toLocaleString()}</td>
+                  <td className="px-3 py-1 text-right tnum">{formatCompact(h.putVolume)}</td>
+                  <td className="px-3 py-1 text-right tnum">{formatCompact(h.callVolume)}</td>
+                  <td className={cn('px-3 py-1 text-right tnum', h.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
+                    {formatRatio(h.putCallRatio)}
+                  </td>
+                  <td className="px-3 py-1 text-right tnum">{h.spikeScore}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ),
+  };
+
   return (
-    // grid-cols-1 = minmax(0, 1fr): a wide child cannot stretch the column past a phone screen.
-    <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-12">
-      <p className="text-[10px] text-slate-500 xl:col-span-12">
+    <div className="space-y-2">
+      {defs.map((d) => (
+        <CollapsibleSection
+          key={d.id}
+          id={d.id}
+          title={d.title}
+          summary={headlines[d.id]}
+          open={sections.isOpen(d.id)}
+          onToggle={() => sections.toggle(d.id)}
+        >
+          {content[d.id]}
+        </CollapsibleSection>
+      ))}
+      <p className="pt-1 text-[10px] text-slate-500">
         Underlined terms explain themselves — hover, tab to them, or tap for the definition, how it is computed and how to read it.
       </p>
-      <div className="min-w-0 xl:col-span-12">
-        <Section id="projection">
-          <ProjectionCard flow={flow} projection={data.projection} calibration={data.calibration} coverage={data.projectionCoverage} />
-        </Section>
-      </div>
-      <div className="min-w-0 space-y-3 xl:col-span-7">
-        <Section id="overview">
-          <Card>
-            <CardHeader title="Flow overview" />
-            <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
-              <Stat
-                label="Put/Call ratio (5m)"
-                term="putCallRatio"
-                value={formatRatio(flow.putCallRatio)}
-                className={flow.putCallRatio > 1 ? 'text-bearish' : 'text-bullish'}
-              />
-              <Stat label="Puts per 5m / session" term="putsCalls5m" value={`${measured ? formatCompact(flow.putVolume) : '—'} / ${formatCompact(flow.sessionPutVolume)}`} />
-              <Stat label="Calls per 5m / session" term="putsCalls5m" value={`${measured ? formatCompact(flow.callVolume) : '—'} / ${formatCompact(flow.sessionCallVolume)}`} />
-              <Stat label="Premium per 5m" term="premium5m" value={measured ? formatPremium(flow.putPremium + flow.callPremium) : '—'} />
-              <Stat
-                label="Chain price (delayed)"
-                term="chainPrice"
-                value={flow.underlyingPrice > 0 ? `$${flow.underlyingPrice.toFixed(2)}` : '—'}
-                className={flow.priceChangePct >= 0 ? 'text-bullish' : 'text-bearish'}
-              />
-              <Stat label="Vol vs expected" term="volVsExpected" value={`${flow.volumeVsExpected.toFixed(1)}×`} />
-              <Stat
-                label="Net flow per 5m"
-                term="netFlow"
-                value={measured ? `${flow.netFlow > 0 ? '+' : ''}${formatCompact(flow.netFlow)}` : '—'}
-                className={measured ? (flow.netFlow > 0 ? 'text-bullish' : flow.netFlow < 0 ? 'text-bearish' : undefined) : 'text-slate-600'}
-              />
-              <div>
-                <p className="text-[10px] uppercase tracking-wider text-slate-500">P/C — last 30 min</p>
-                <div className="mt-1">
-                  <Sparkline points={flow.ratioSparkline} />
-                </div>
-              </div>
-            </div>
-          </Card>
-        </Section>
-        {(flow.analytics || flow.iv30 !== null) && (
-          <Section id="volatility">
-            <VolatilityCard flow={flow} />
-          </Section>
-        )}
-        <Section id="relative">
-          <SectorRelativeCard flow={flow} />
-        </Section>
-      </div>
-
-      <div className="min-w-0 space-y-3 xl:col-span-5">
-        {data.trackRecord && (
-          <Section id="track-record">
-            <TrackRecordCard flow={flow} record={data.trackRecord} />
-          </Section>
-        )}
-        {flow.eventGauge && (
-          <Section id="event">
-            <EventGaugeCard flow={flow} />
-          </Section>
-        )}
-        {flow.idiosyncraticMoves && flow.idiosyncraticMoves.length > 0 && (
-          <Section id="idiosyncratic">
-            <IdiosyncraticCard flow={flow} />
-          </Section>
-        )}
-      </div>
-
-      <div className="min-w-0 xl:col-span-12">
-        <Section id="time-of-day">
-          <IntradayCards symbol={flow.symbol} />
-        </Section>
-      </div>
-
-      <div className="min-w-0 xl:col-span-12">
-        <Section id="relationships">
-          <RelationshipsCard symbol={flow.symbol} />
-        </Section>
-      </div>
-
-      <div className="min-w-0 xl:col-span-12">
-        <Section id="history">
-          <Card>
-            <CardHeader title="Stored snapshots — latest 100 (5-min buckets, by data time)" />
-            {history.length === 0 ? (
-              <p className="py-6 text-center text-xs text-slate-500">
-                No stored history — connect a database (DATABASE_URL) to accumulate snapshots for backtesting.
-              </p>
-            ) : (
-              <div className="max-h-80 overflow-auto">
-                <table className="w-full text-xs">
-                  <thead className="sticky top-0 bg-surface-raised text-left text-[10px] uppercase tracking-wider text-slate-500">
-                    <tr>
-                      <th className="px-3 py-1.5">Bucket</th>
-                      <th className="px-3 py-1.5 text-right">Puts</th>
-                      <th className="px-3 py-1.5 text-right">Calls</th>
-                      <th className="px-3 py-1.5 text-right">P/C</th>
-                      <th className="px-3 py-1.5 text-right">Score</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {history.slice(-100).reverse().map((h) => (
-                      <tr key={h.bucketStart} className="border-t border-surface-border/50 text-slate-300">
-                        <td className="px-3 py-1">{new Date(h.bucketStart).toLocaleString()}</td>
-                        <td className="px-3 py-1 text-right tnum">{formatCompact(h.putVolume)}</td>
-                        <td className="px-3 py-1 text-right tnum">{formatCompact(h.callVolume)}</td>
-                        <td className={cn('px-3 py-1 text-right tnum', h.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
-                          {formatRatio(h.putCallRatio)}
-                        </td>
-                        <td className="px-3 py-1 text-right tnum">{h.spikeScore}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Card>
-        </Section>
-      </div>
     </div>
   );
 }
