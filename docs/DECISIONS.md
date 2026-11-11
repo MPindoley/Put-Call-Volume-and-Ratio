@@ -613,6 +613,205 @@ a per-stock lookup. **Reasoning:** the learning's inputs are only as good as
 the coverage behind them, and a gap in one stock is invisible in the
 aggregate numbers.
 
+### 5.16 Each name has its own daily clock (`intraday-profile.ts`)
+"Volume vs expected" is session volume against what is normal BY THIS TIME OF
+DAY. Until now that was one fixed U-shape for every name. It is now each
+name's own profile: the share of the day's option volume it trades in each of
+the 13 half hours, split into puts and calls, kept separately for regular
+days, weekly-expiry days (the week's last session) and the session reacting
+to its earnings.
+
+- **Measured from the 5-minute snapshots, then folded.** Snapshots carry
+  cumulative day volume; the curve is interpolated at each half-hour boundary.
+  A session counts only when the curve reaches the close, no boundary sits in
+  a gap longer than 75 minutes, and the day traded 200+ contracts; half days
+  are skipped. Each finished session is folded once into a recency-weighted
+  running sum (half-life 40 sessions of that kind) — 26 numbers per name per
+  kind of day — because the snapshots are thinned after 5 days and a 1 GB
+  database cannot keep them. The price: a changed method cannot be recomputed
+  from history, so `CLOCK_METHOD` stamps the rows and a new method starts over.
+- **Shrunk like everything else here.** fixed curve → all names → sector →
+  name, each level weighted n / (n + prior) (10 sessions for a name). An
+  expiry or earnings clock starts as the name's regular clock bent the way
+  that kind of day bends its sector's, and moves to the name's own data as it
+  arrives — a name has four earnings sessions a year, so on its own it would
+  never have a clock for them.
+- **Inside a half hour the expectation is interpolated**, not stepped to the
+  end of the bucket as before (which understated the multiple early in every
+  half hour). The first-half-hour floor stays: the opening minutes are judged
+  against the whole first half hour, and never against less than 5% of a day.
+- **The spike signal's definition moved with it.** Alerts — and so the
+  `spike_alert` signal — are now relative to the name's own clock. The
+  signal log's version stamp is NOT bumped: it is shared by every signal, and
+  bumping it would discard all learned evidence to mark a refinement of one;
+  the 120-session half-life lets the older spike evidence fade.
+
+**If reversed:** names that always trade early alert every morning, names that
+trade late never do, and every expiry Friday looks unusual.
+
+### 5.17 Spike alerts are graded intraday, by time of day (`spike-outcomes.ts`)
+An alert used to be graded on one number (the move about a day later). Each is
+now graded on four windows — 30 minutes, 2 hours, that session's close, the
+next session's close — and the results are learned per time of day (morning /
+midday / afternoon) × lean (call- or put-heavy), for all names, each sector
+and each name.
+
+- **Windows start when the alert APPEARED**, not at the market moment that set
+  it off: on the 15-minute-delayed feed the stretch in between could not have
+  been acted on, so it is not credited.
+- **Scored against SPY** for single names (the yardstick of §4.6), so a
+  call-heavy spike on a day the whole market rallies gets no credit for the
+  rally. ETFs are scored on their raw move, in a pool of their own.
+- **Shrunk from a coin flip:** 50% → all names → sector → name, weight
+  n / (n + prior) (30 / 40 / 40). Nothing is shown for a cell until 20 spikes
+  of that kind are graded across all names. A name that re-alerts within one
+  part of one session counts once. Observations halve in weight every 120
+  sessions.
+- **Graded in two steps** because the inputs expire at different times: the
+  intraday windows as soon as the session ends (they need the 5-minute
+  snapshots), the next-day window once that session has settled. An alert
+  with no price on record near it is closed unmeasured and never learned from.
+- **Live alerts quote the record** (`followThrough`): the name's own once it
+  has 10 graded spikes of that kind, else its sector's (20), else all names'.
+- Alerts are kept 400 days (was 120): graded alerts are the evidence.
+
+**If reversed:** an alert says volume is unusual and nothing about what that
+has meant at this hour.
+
+### 5.18 Signal timing: the same book at three windows (`signal-timing.ts`)
+The edge book grades every signal on one window, 10 sessions. Every graded
+signal also has its 5- and 20-session returns on record, so each night the
+latest book is rebuilt at all three windows — same evidence, same shrinkage,
+each window against its own regime-matched base rate — and stored side by side
+(`SignalTiming`, one row, replaced nightly). Comparing the three edges says
+how long a signal has taken to work: fast and fading, slow to build, steady,
+no edge, or pointing the wrong way.
+
+- **Like for like.** A signal is graded at all three windows together, once
+  its 20-session window has closed, so the three books rest on the same
+  signals: a difference between windows is timing, not sample.
+- **Picking the best of three flatters it, so the bar is explicit.** An edge
+  must clear 2 points AND its own standard error; a window is named only when
+  it beats the others by 1.5 points (or half the standard error); and a level
+  needs 30 graded signals OF ITS OWN before any verdict. A stock's page reads
+  the timing at the most specific level that has them — the stock, its sector,
+  the market regime, all names — and says which.
+- **Descriptive only.** The learned lean on the scanner stays on the
+  10-session window, the one self-grading holds it to (§5.6). Letting each
+  signal choose its own best window would be choosing after the fact, and
+  would change what a year of graded convictions meant.
+- **One load.** `loadLearningInputs` is split into the database read
+  (`loadLearningRows`) and a pure per-window derivation, so the two extra
+  windows cost no extra queries; they are derived one at a time because each
+  holds every eligible stock-day.
+
+**If reversed:** a signal with a real edge at 5 sessions and none at 10 reads
+as "no edge", and nothing says how long to give a signal that has one.
+
+### 5.19 The size of the move depends on conditions (`projection-history.ts`)
+The realized ÷ implied ratio (§5.9) was one average per stock over every kind
+of period. Three things known at a window's start change how big the move in
+it runs against what was priced: the market's volatility regime (calm /
+stressed), the stock's IV against its own recent median (high / low, from its
+previous 20–120 sessions only), and whether it reports earnings inside the
+window. For each, a factor — realized ÷ implied in that state over the pool's
+usual — is learned on all names, then per sector, and the stock's blended
+ratio is multiplied by the factors of the states it is in as of the latest
+session. The adjusted range on the ticker page and the `calRatio` stored with
+each logged projection use that conditional ratio, so the existing
+projection grading (§5.10) tests it.
+
+- **Pooled, not per stock.** One stock has a handful of independent periods in
+  each state; a per-stock factor would be noise.
+- **Evidence = independent periods OF THE STATE** (its distinct start dates ÷
+  horizon). A thousand names on the same ten stressed sessions are two
+  stressed weeks, not a thousand observations. So monthly factors stay near 1
+  until months of each state exist; all names shrink toward 1, a sector
+  toward all names (prior 8 periods), and a factor is bounded to 0.6–1.8.
+- **Main effects only.** The three factors are multiplied as if independent;
+  the joint cells (stressed × high IV × earnings) are far too thin to estimate.
+
+**If reversed:** the same range multiplier is used the week a stock reports
+in a stressed market as in a quiet week with nothing on the calendar.
+
+### 5.20 Put/call against each name's own range: a second signal, not a replacement (`own-normal.ts`)
+`pc_extreme` uses one band for every name (OI put/call ≥ 1.3 or ≤ 0.7), so a
+stock that is hedged all year fires it every session and a retail favourite
+fires the other side every session. `pc_own` asks the informative question
+instead: is this session outside the name's OWN usual range — at or beyond
+the 5th / 95th percentile of its previous 120 pinned sessions (40 minimum)?
+
+- **Added beside `pc_extreme`, not in place of it.** Redefining the old
+  signal would bump the shared `thresholdVersion` and discard every signal's
+  learned evidence. As a new type, both definitions are graded on the same
+  footing and the record shows which one carries an edge. The grid stays
+  explicit about its size: the matrix reports cells tested and how many
+  would clear by chance.
+- **Cutoffs fixed in advance** (120 / 40 / p05–p95), stamped into every row's
+  `detail` (`OWN_NORMAL.version`); a change is a new stamp, never a silent edit.
+- **Point-in-time and reconstructible.** The percentile uses previous
+  sessions only and is stored on the pinned row (`DailyMetric.oiPcPct`), so
+  the base-rate denominator — days the signal could have fired — is exact
+  (§4.4), and past sessions are filled from stored open interest with no
+  hindsight. `repairOwnPutCall` logs the signals those sessions would have
+  fired (dated on their session), so the new type starts with history.
+- **Shown everywhere the fixed number is.** The scanner's OI P/C cell marks
+  ▲ / ▼ when a name is outside its own range and its tooltip gives the range;
+  the ticker page states where the live figure stands.
+
+**If reversed:** the put/call signal keeps flagging the same structurally
+put-heavy and call-heavy names every day.
+
+### 5.21 One name, or its sector at once (`spike-outcomes.ts`, `sector-leaders.ts`)
+**Breadth of a spike.** When an alert fires, the engine counts the names in
+its sector that are spiking at that moment (this one included, among names
+holding that session's data) and how many lean the same way. From 3 names and
+8% of the sector it is "sector-wide", otherwise "one name"; the count is
+stored on the alert (`sectorSpiking` / `sectorNames`), shown in the feed, and
+lone and sector-wide spikes are graded apart (all times of day together,
+single names only, shrunk from a coin flip, 20 graded before anything shows).
+The cutoff was fixed before any result existed. ETFs have no breadth.
+
+**Who leads whom.** The Cohorts page ranks, per cohort, the names whose
+option positioning has shifted before the group moved: the rank correlation
+between the day's change in a name's 25-delta risk-reversal skew and the
+cohort benchmark's NEXT-session return in excess of SPY. A cohort has dozens
+of names, so some correlate by luck: a name needs 40 sessions to be tested, is
+listed only past |t| 2.6, and the card states how many names were tested and
+how many would clear that bar by chance — and says so in words when the list
+is no longer than that. Computed on demand per cohort and cached until the
+next finalized session. **Exploratory by design:** it is daily, delayed and
+one session ahead, so it ranks candidates and feeds nothing into the learned
+lean.
+
+**If reversed:** an alert cannot tell a stock-specific spike from a
+sector-wide one, and nothing shows which names' flow tends to move first.
+
+### 5.22 Signals together are measured, not assumed (`signal-combos.ts`)
+The lean combines co-firing signals by a fixed rule (signed sum ÷ √m, §5.7).
+Whether two signals agreeing on a name is actually worth more than either
+alone is now measured: for every pair of signal types and each direction, the
+edge on days both fired the same way, on days only the first fired, and on
+days only the second fired — the same graded signals, regime-matched base
+rates and recency weights as the edge book, built the same night and stored
+beside the timing books (`SignalTiming.combos`).
+
+- **The neutral guess is "company adds nothing".** The together edge is
+  shrunk toward the average of the two alone edges (prior 40), not toward
+  zero and not toward the better one — so a handful of co-firings cannot
+  manufacture a synergy, and picking the better of two noisy numbers is not
+  built into the baseline.
+- **A verdict has to clear the better (or fall below the worse) alone edge**
+  by 2 points and the together edge's own standard error, after 30 days
+  together. Fifteen pairs in two directions are compared at once; the page
+  says so.
+- **The lean's rule is not changed.** It is the rule self-grading holds to
+  account; the table shows what it assumes for each pair beside what was
+  observed, which is the evidence a future change to it would need.
+
+**If reversed:** "two signals agree" is treated as stronger evidence by rule,
+with nothing checking whether it is.
+
 ---
 
 ## 6. Cross-cutting invariants (the short list a reviewer should protect)

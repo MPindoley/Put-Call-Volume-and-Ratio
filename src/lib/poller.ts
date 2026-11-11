@@ -26,6 +26,9 @@ import {
   upsertFlowSnapshots,
 } from './history-jobs';
 import { loadInstrumentConfigs } from './interpretation';
+import { loadClocksIntoEngine } from './intraday-jobs';
+import { DEFAULT_INTRADAY_SHAPE } from './intraday-profile';
+import { loadSpikeBookIntoEngine } from './spike-outcome-jobs';
 import { backfillRegimeHistory } from './regime-jobs';
 import { loadConvictionsIntoEngine } from './learning-jobs';
 import { refreshProjectionHistory } from './projection-jobs';
@@ -108,6 +111,7 @@ export class Poller {
       // closes; the rest of the price history fills in at the end of each maintenance pass.
       await backfillCloseHistory(this.engine, BENCHMARKS.length);
       await backfillRegimeHistory(); // seed vol+trend regime history (gamma null) once
+      await this.ready; // maintenance must know whether an after-hours catch-up is under way
       await runMaintenance(this.engine);
       await this.importOldHistory();
     }).catch((err) => console.error('[poller] startup jobs failed:', err));
@@ -303,12 +307,15 @@ export class Poller {
         this.engine.detector.setBaseline(b.symbol, {
           avgDailyVolume: b.avgVolume,
           stdDevVolume: b.stdDevVolume,
-          intradayShape: shape && shape.length === 13 ? shape : [],
+          intradayShape: shape && shape.length === 13 ? shape : DEFAULT_INTRADAY_SHAPE,
           sampleDays: b.sampleDays,
         });
       }
       console.log(`[poller] loaded ${baselines.length} stored baselines`);
     });
+    // Each name's learned daily clock, and what has followed past spike alerts.
+    await loadClocksIntoEngine(this.engine);
+    await loadSpikeBookIntoEngine(this.engine);
     await tryDb('load prior activity', async (db) => {
       const rows = await db.dailyMetric.findMany({
         where: { optVolume: { not: null } },

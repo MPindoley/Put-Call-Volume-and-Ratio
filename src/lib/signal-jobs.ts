@@ -21,6 +21,7 @@ import { tryDb } from './db';
 import { finalizedMetricWhere } from './finalized-reads';
 import type { FlowEngine } from './flow-engine';
 import { defaultInstrument, interpretDivergence, loadInstrumentConfigs } from './interpretation';
+import { OWN_NORMAL, ownDirection } from './own-normal';
 import { loadBenchmarkResolver } from './sector-benchmarks';
 import { NOT_SEEDED } from './seed-guard';
 import { BACKWARDATION_SLOPE, classifyCurveResolution, classifyResolution, thresholdVersion } from './signals';
@@ -125,6 +126,19 @@ export async function logSignals(engine: FlowEngine | null, now = new Date()): P
             direction: flip(rel.skewZ30 > 0 ? 'bullish' : 'bearish', inverse),
             magnitude: rel.skewZ30,
             detail: null,
+            ...stampFor(dm.symbol),
+          });
+        }
+
+        // pc_own — OI put/call outside the name's own usual range (own-normal.ts).
+        const ownDir = ownDirection(dm.oiPcPct);
+        if (ownDir) {
+          rows.push({
+            symbol: dm.symbol,
+            signalType: 'pc_own',
+            direction: flip(ownDir, inverse),
+            magnitude: Number((dm.oiPcPct as number).toFixed(3)),
+            detail: OWN_NORMAL.version,
             ...stampFor(dm.symbol),
           });
         }

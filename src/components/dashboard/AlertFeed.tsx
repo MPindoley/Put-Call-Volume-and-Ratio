@@ -10,7 +10,7 @@ import { Card, CardHeader } from '@/components/ui/card';
 import { SpikeBadge } from '@/components/ui/badge';
 import { cn, formatCompact, formatPremium, formatTime } from '@/lib/utils';
 import { useAlerts } from '@/hooks/useAlerts';
-import type { SpikeAlert } from '@/types';
+import type { SpikeAlert, SpikeFollowThrough } from '@/types';
 
 export function AlertFeed({ embedded = false }: { embedded?: boolean }): JSX.Element {
   const { alerts } = useAlerts();
@@ -32,6 +32,17 @@ export function AlertFeed({ embedded = false }: { embedded?: boolean }): JSX.Ele
               <p className="mt-0.5 text-[10px] text-slate-500 tnum">
                 {formatCompact(a.contracts)} contracts · {formatPremium(a.premium)} premium
               </p>
+              {a.breadth && (
+                <p
+                  className="mt-0.5 text-[10px] text-slate-400 tnum"
+                  title="How many names in its sector were spiking when this alert fired"
+                >
+                  {a.breadth.crowd ? 'Sector-wide' : 'One name'}: {a.breadth.spiking} of {a.breadth.names} {a.breadth.sector}{' '}
+                  names spiking
+                  {a.breadth.spiking > 1 && ` (${a.breadth.sameLean} leaning the same way)`}
+                </p>
+              )}
+              {a.followThrough && <FollowThroughLine symbol={a.symbol} f={a.followThrough} />}
             </Link>
           </li>
         ))}
@@ -45,6 +56,25 @@ export function AlertFeed({ embedded = false }: { embedded?: boolean }): JSX.Ele
       <CardHeader title="Spike Alerts" right={<span className="text-[10px] text-slate-500 tnum">{alerts.length}</span>} />
       <div className="min-h-0 flex-1 overflow-auto">{body}</div>
     </Card>
+  );
+}
+
+/** What followed past spikes like this one (spike-outcomes.ts): the learned follow-through, and whose record it is. */
+function FollowThroughLine({ symbol, f }: { symbol: string; f: SpikeFollowThrough }): JSX.Element {
+  const who = f.level === 'ticker' ? `${symbol}'s` : f.level === 'sector' ? "its sector's" : 'all';
+  const windows = [
+    f.m30 !== null && `30 min ${Math.round(f.m30 * 100)}%`,
+    f.close !== null && `by the close ${Math.round(f.close * 100)}%`,
+    f.next !== null && `next day ${Math.round(f.next * 100)}%`,
+  ].filter(Boolean);
+  return (
+    <p
+      className="mt-0.5 text-[10px] text-slate-400 tnum"
+      title="How often the price kept moving the way past spikes like this leaned, from the moment the alert appeared (single names: against SPY). 50% is a coin flip."
+    >
+      Learned from {who} {f.n} past {f.part} {f.lean === 'calls' ? 'call' : 'put'}-heavy spikes — kept going:{' '}
+      {windows.join(' · ')}
+    </p>
   );
 }
 

@@ -201,6 +201,12 @@ export interface TickerFlow {
    * the current price (marketCapOf). Null for ETFs/funds and names not listed.
    */
   sharesOutstanding: number | null;
+  /**
+   * The name's own usual open-interest put/call range (own-normal.ts): 5th
+   * percentile, median, 95th percentile over its recent sessions. Null until it
+   * has enough sessions on record.
+   */
+  ownPc?: { lo: number; mid: number; hi: number; n: number } | null;
   /** 30-day implied volatility (vol points, e.g. 27.1) and day change. */
   iv30: number | null;
   iv30Change: number | null;
@@ -308,6 +314,40 @@ export interface SpikeAlert {
   contracts: number;
   putCallRatio: number;
   createdAt: number;
+  /**
+   * What followed past spikes like this one — same time of day, same lean
+   * (spike-outcomes.ts). Absent until enough have been graded.
+   */
+  followThrough?: SpikeFollowThrough | null;
+  /** Whether the spike is this name alone or its sector at once (spike-outcomes.ts). */
+  breadth?: SpikeBreadth | null;
+}
+
+/** How much of a name's sector was spiking when its alert fired. */
+export interface SpikeBreadth {
+  sector: string;
+  /** Names in the sector spiking at that moment, this one included. */
+  spiking: number;
+  /** …of which leaning the same way as this one (call- or put-heavy), this one included. */
+  sameLean: number;
+  /** Names in the sector with data that session. */
+  names: number;
+  /** Enough of the sector at once to call it sector-wide rather than one name. */
+  crowd: boolean;
+}
+
+/** What past spike alerts like a live one were followed by (spike-outcomes.ts). */
+export interface SpikeFollowThrough {
+  /** Whose record this is: the name's own, its sector's, or all names'. */
+  level: 'all' | 'sector' | 'ticker';
+  part: 'morning' | 'midday' | 'afternoon';
+  lean: 'calls' | 'puts';
+  /** Graded spikes behind it at that level. */
+  n: number;
+  /** Learned chance the price moves the spike's way over each window (0–1); null = not applicable or not learned yet. */
+  m30: number | null;
+  close: number | null;
+  next: number | null;
 }
 
 export interface AggregateRatio {

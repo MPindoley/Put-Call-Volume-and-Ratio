@@ -14,6 +14,7 @@ const SIGNAL_LABELS: Record<string, string> = {
   skew_z: 'Skew z',
   divergence: 'Divergence',
   pc_extreme: 'OI P/C extreme',
+  pc_own: 'OI P/C vs own range',
   spike_alert: 'Volume spike',
 };
 

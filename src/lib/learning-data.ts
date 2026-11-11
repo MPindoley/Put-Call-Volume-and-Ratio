@@ -39,6 +39,8 @@ import { regimeConfigVersion } from './regime';
 import { loadBenchmarkResolver } from './sector-benchmarks';
 import { NOT_SEEDED } from './seed-guard';
 import { TERMINAL_QUIET_SESSIONS } from './signal-jobs';
+import type { ComboBook } from './signal-combos';
+import { TIMING_HORIZONS, timingDeepest, type LevelTiming, type TimingHorizon } from './signal-timing';
 import {
   DIRECTIONAL_SIGNALS,
   eligibleFromMetric,
@@ -95,6 +97,36 @@ export async function loadLearningInputs(
   params: LearningParams = LEARNING_PARAMS,
   cfgIn?: AnalyticsConfig,
 ): Promise<LearningInputs | null> {
+  const rows = await loadLearningRows(db, cfgIn);
+  return rows ? deriveLearningInputs(rows, params) : null;
+}
+
+type SignalRow = Awaited<ReturnType<PrismaClient['signalLog']['findMany']>>[number];
+
+/**
+ * Everything read from the database for learning, before any choice of grading
+ * window: one load serves the canonical book and the same book rebuilt at other
+ * windows (signal-timing.ts) — see deriveLearningInputs.
+ */
+export interface LearningRows {
+  cfg: AnalyticsConfig;
+  tVersion: string;
+  rVersion: string;
+  sessions: string[];
+  sessionIdx: Map<string, number>;
+  cellByDate: Map<string, string>;
+  sectorFor: (symbol: string) => string;
+  cohortOf: (symbol: string) => string | null;
+  dms: { symbol: string; date: Date; close: number | null; putOI: number | null; callOI: number | null; spikeBaselineDays: number | null; oiPcPct: number | null; historicalCloseOnly: boolean }[];
+  rels: { symbol: string; date: Date; skewZ30: number | null; divergenceWindow: number }[];
+  closes: Map<string, Map<string, number>>;
+  frozenBy: Map<string, Set<string>>;
+  frozen: FrozenRun[];
+  signals: SignalRow[];
+}
+
+/** The reads behind loadLearningInputs. Null when there are no sessions. */
+export async function loadLearningRows(db: PrismaClient, cfgIn?: AnalyticsConfig): Promise<LearningRows | null> {
   const cfg = cfgIn ?? (await getAnalyticsConfig());
   const tVersion = thresholdVersion(cfg);
   const rVersion = regimeConfigVersion({
@@ -103,8 +135,6 @@ export async function loadLearningInputs(
     gammaDeadbandFrac: cfg.regimeGammaDeadbandFrac,
     persistDays: cfg.regimePersistDays,
   });
-  const H = params.horizon;
-  const retField = `fwd${H}${params.basis === 'raw' ? 'Raw' : params.basis === 'exSpy' ? 'ExSpy' : 'ExSector'}`;
 
   // ── Canonical sessions and regimes ──
   const spyRows = await db.dailyMetric.findMany({
@@ -115,7 +145,6 @@ export async function loadLearningInputs(
   if (spyRows.length === 0) return null;
   const sessions = spyRows.map((r) => iso(r.date));
   const sessionIdx = new Map(sessions.map((d, i) => [d, i]));
-  const lastIdx = sessions.length - 1;
   const regimes = await db.dailyRegime.findMany({ where: { final: true, ...NOT_SEEDED } });
   const cellByDate = new Map(regimes.map((r) => [iso(r.date), `${r.volState}|${r.trendState}|${r.gammaState ?? 'na'}`]));
 
@@ -133,6 +162,7 @@ export async function loadLearningInputs(
       putOI: true,
       callOI: true,
       spikeBaselineDays: true,
+      oiPcPct: true,
       historicalCloseOnly: true,
     },
   });
@@ -161,12 +191,7 @@ export async function loadLearningInputs(
     frozen.push({ symbol, sessions: f.size, from: ds[0]!, to: ds[ds.length - 1]! });
   }
   frozen.sort((a, b) => b.sessions - a.sessions);
-  const isFrozen = (symbol: string, i: number): boolean => {
-    const d = sessions[i];
-    return d !== undefined && (frozenBy.get(symbol)?.has(d) ?? false);
-  };
 
-  // ── Signals: evidence (graded) and active (per session) ──
   const signals = await db.signalLog.findMany({
     where: {
       ...NOT_SEEDED,
@@ -176,6 +201,40 @@ export async function loadLearningInputs(
       regimeConfigVersion: rVersion,
     },
   });
+  return {
+    cfg,
+    tVersion,
+    rVersion,
+    sessions,
+    sessionIdx,
+    cellByDate,
+    sectorFor: (symbol) => resolver.sectorFor(symbol),
+    cohortOf,
+    dms,
+    rels,
+    closes,
+    frozenBy,
+    frozen,
+    signals,
+  };
+}
+
+/**
+ * The learning inputs for one grading window (params.horizon) and basis, from
+ * rows already loaded. Pure: no database access.
+ */
+export function deriveLearningInputs(rows: LearningRows, params: LearningParams = LEARNING_PARAMS): LearningInputs {
+  const { cfg, tVersion, rVersion, sessions, sessionIdx, cellByDate, cohortOf, dms, rels, closes, frozenBy, frozen, signals } = rows;
+  const H = params.horizon;
+  const retField = `fwd${H}${params.basis === 'raw' ? 'Raw' : params.basis === 'exSpy' ? 'ExSpy' : 'ExSector'}`;
+  const lastIdx = sessions.length - 1;
+  const isEtf = (symbol: string, flag = false): boolean => flag || rows.sectorFor(symbol) === 'ETF';
+  const isFrozen = (symbol: string, i: number): boolean => {
+    const d = sessions[i];
+    return d !== undefined && (frozenBy.get(symbol)?.has(d) ?? false);
+  };
+
+  // ── Signals: evidence (graded) and active (per session) ──
   const evidence: RawEvidence[] = [];
   const activeBySession = new Map<number, ActiveSignal[]>();
   let excludedFrozen = 0;
@@ -192,7 +251,7 @@ export async function loadLearningInputs(
       signalType: r.signalType,
       direction: r.direction as Direction,
       regime: `${r.regimeVol ?? 'na'}|${r.regimeTrend ?? 'na'}`,
-      sector: resolver.sectorFor(r.symbol),
+      sector: rows.sectorFor(r.symbol),
       symbol: r.symbol,
     };
     const cell = `${r.regimeVol ?? 'na'}|${r.regimeTrend ?? 'na'}|${r.regimeGamma ?? 'na'}`;
@@ -297,6 +356,44 @@ export function bookFromRow(row: { version: string; nodes: unknown; rowsUsed: nu
   };
 }
 
+export interface TimingBooks {
+  asOf: string;
+  books: Record<TimingHorizon, EdgeBook>;
+  /** Signals together (signal-combos.ts), built the same night; null on a row from before it existed. */
+  combos: ComboBook | null;
+}
+
+let timingCache: { version: string; at: number; value: TimingBooks | null } | null = null;
+const TIMING_TTL_MS = 10 * 60_000;
+
+/** Forget the cached timing books (a new row was just written). */
+export function invalidateTimingBooks(): void {
+  timingCache = null;
+}
+
+/**
+ * The stored timing books (signal-timing.ts: the edge book at each grading
+ * window) under the current learning version, or null when none has been
+ * built yet. Held in memory for ten minutes: the row is large and changes
+ * once a night.
+ */
+export async function loadTimingBooks(db: PrismaClient, cfgIn?: AnalyticsConfig): Promise<TimingBooks | null> {
+  const version = currentLearningVersion(cfgIn ?? (await getAnalyticsConfig()));
+  if (timingCache && timingCache.version === version && Date.now() - timingCache.at < TIMING_TTL_MS) return timingCache.value;
+  const row = await db.signalTiming.findUnique({ where: { version } });
+  let value: TimingBooks | null = null;
+  const stored = row?.books as Record<string, EdgeBook['nodes']> | null | undefined;
+  if (row && stored && TIMING_HORIZONS.every((h) => stored[String(h)] && typeof stored[String(h)] === 'object')) {
+    const books = {} as Record<TimingHorizon, EdgeBook>;
+    for (const h of TIMING_HORIZONS) {
+      books[h] = bookFromRow({ version, nodes: stored[String(h)], rowsUsed: 0, rowsUnbased: 0 });
+    }
+    value = { asOf: iso(row.asOf), books, combos: (row.combos as ComboBook | null) ?? null };
+  }
+  timingCache = { version, at: Date.now(), value };
+  return value;
+}
+
 /**
  * The edge book as of session index `asOfIdx`, with base rates as known then.
  * Pass `base` from a BaseRateSweep advanced to asOfIdx when building many books
@@ -390,6 +487,12 @@ export interface TrackRecord {
     asOf: string;
     edge: number;
     path: { level: string; n: number; raw: number | null; edge: number; evidence: number }[];
+    /**
+     * How the edge changes with the grading window (signal-timing.ts), read at the
+     * most specific level — this stock, its sector, the market regime, all names —
+     * that has enough graded signals of its own. Null until built.
+     */
+    timing: LevelTiming | null;
   }[];
   /** Why `learned` may be empty: no book yet, or an ETF (reference only, never learned from). */
   note: string | null;
@@ -475,20 +578,23 @@ export async function loadTrackRecord(
     } else {
       const book = bookFromRow(latest);
       const asOf = iso(latest.asOf);
+      const timing = await loadTimingBooks(db, cfg);
       for (const r of rows.filter((x) => iso(x.firedOn) === asOf)) {
-        const est = estimateEdge(book, {
+        const key: SignalKey = {
           signalType: r.signalType,
           direction: r.direction as Direction,
           regime: `${r.regimeVol ?? 'na'}|${r.regimeTrend ?? 'na'}`,
           sector,
           symbol,
-        });
+        };
+        const est = estimateEdge(book, key);
         learned.push({
           signalType: r.signalType,
           direction: r.direction as Direction,
           asOf,
           edge: est.edge,
           path: est.path.map((p) => ({ level: p.level, n: p.n, raw: p.raw, edge: p.edge, evidence: p.evidence })),
+          timing: timing ? timingDeepest(timing.books, key) : null,
         });
       }
     }

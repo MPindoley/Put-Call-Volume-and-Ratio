@@ -19,6 +19,9 @@ import { formatMarketCap, marketCapOf } from '@/lib/market-cap';
 import type { Projection } from '@/lib/projection';
 import type { CalibrationView, HorizonKey } from '@/lib/projection-history';
 import { ProjectionCard, type ProjectionCoverage } from './ProjectionCard';
+import { standing } from '@/lib/own-normal';
+import { timingSentence, timingShort } from '@/lib/signal-timing';
+import { IntradayCards } from './IntradayCards';
 import { RelationshipsCard } from './RelationshipsCard';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
 import type { TrackRecord } from '@/lib/learning-data';
@@ -60,6 +63,7 @@ function sectionsFor(data: DetailResponse | undefined): SectionDef[] {
   if (data.trackRecord) out.push({ id: 'track-record', label: 'Track record' });
   if (flow.eventGauge) out.push({ id: 'event', label: 'Event move' });
   if (flow.idiosyncraticMoves && flow.idiosyncraticMoves.length > 0) out.push({ id: 'idiosyncratic', label: 'Idiosyncratic' });
+  out.push({ id: 'time-of-day', label: 'Time of day' });
   out.push({ id: 'relationships', label: 'Relationships' });
   out.push({ id: 'history', label: 'History' });
   return out;
@@ -384,6 +388,23 @@ function VolatilityCard({ flow }: { flow: TickerFlow }): JSX.Element | null {
               value={a.oiPutCall !== null ? a.oiPutCall.toFixed(2) : '—'}
               className={(a.oiPutCall ?? 1) > 1 ? 'text-bearish' : 'text-bullish'}
             />
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">
+                <Term k="ownPc">OI P/C vs its own range</Term>
+              </p>
+              {flow.ownPc ? (
+                <>
+                  <p className={cn('text-sm font-semibold leading-7', standing(a.oiPutCall, flow.ownPc) === 'normal' ? 'text-slate-400' : 'text-slate-100')}>
+                    {OWN_STANDING[standing(a.oiPutCall, flow.ownPc) ?? 'normal']}
+                  </p>
+                  <p className="text-[10px] tnum text-slate-500">
+                    usually {flow.ownPc.lo.toFixed(2)}–{flow.ownPc.hi.toFixed(2)} · {flow.ownPc.n} sessions
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm font-semibold leading-7 text-slate-500">Learning</p>
+              )}
+            </div>
             <Stat
               label="OI change (day)"
               term="oiChange"
@@ -716,6 +737,7 @@ const SIGNAL_NAMES: Record<string, string> = {
   skew_z: 'Skew z',
   divergence: 'Divergence',
   pc_extreme: 'OI P/C extreme',
+  pc_own: 'OI P/C vs own range',
   spike_alert: 'Volume spike',
 };
 const LEVEL_NAMES: Record<string, string> = {
@@ -764,6 +786,19 @@ function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackReco
                       {pts(l.edge)} pts above <Term k="baseRate">base</Term>
                     </span>
                   </p>
+                  {l.timing && (
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-slate-400">
+                      <Term k="signalTiming">Plays out over</Term>: <span className="text-slate-200">{timingShort(l.timing)}</span>.{' '}
+                      {timingSentence(l.timing)}
+                      {l.timing.verdict !== 'learning' && (
+                        <span className="tnum text-slate-500">
+                          {' '}
+                          Measured on {TIMING_LEVEL[l.timing.level] ?? l.timing.level} ({l.timing.graded} graded) — edge by window:{' '}
+                          {l.timing.windows.map((w) => `${w.horizon} sessions ${pts(w.edge)}`).join(' · ')} pts.
+                        </span>
+                      )}
+                    </p>
+                  )}
                   <table className="mt-1 w-full text-[11px] tnum">
                     <thead className="text-left text-[9px] uppercase tracking-wider text-slate-600">
                       <tr>
@@ -875,6 +910,17 @@ function Section({ id, children }: { id: string; children: ReactNode }): JSX.Ele
   );
 }
 
+/** Where the live OI put/call stands against the name's own usual range (own-normal.ts). */
+const OWN_STANDING = { high: 'Unusually put-heavy', low: 'Unusually call-heavy', normal: 'Normal for it' } as const;
+
+/** Whose graded signals a timing verdict rests on (the most specific level with enough of them). */
+const TIMING_LEVEL: Record<string, string> = {
+  ticker: "this stock's own signals",
+  sector: "its sector's signals in this market regime",
+  regime: 'all stocks in this market regime',
+  signal: 'all stocks',
+};
+
 /**
  * Two columns on wide screens: the live read on the left (overview, vol &
  * positioning, sector-relative), what the app has learned and event context on
@@ -957,6 +1003,12 @@ function TickerBody({ data }: { data: DetailResponse }): JSX.Element {
             <IdiosyncraticCard flow={flow} />
           </Section>
         )}
+      </div>
+
+      <div className="min-w-0 xl:col-span-12">
+        <Section id="time-of-day">
+          <IntradayCards symbol={flow.symbol} />
+        </Section>
       </div>
 
       <div className="min-w-0 xl:col-span-12">

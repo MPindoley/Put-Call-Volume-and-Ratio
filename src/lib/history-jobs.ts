@@ -11,7 +11,8 @@
  *                     so "N× expected" is measured against real history.
  *  scoreAlerts      — fill Alert.moveNextDay: underlying % move ~1 trading
  *                     day after each alert. Powers the accuracy scoreboard.
- *  pruneHistory     — retention: snapshots 35d, ratio points 90d, alerts 120d.
+ *  pruneHistory     — retention: snapshots 35d, ratio points 90d, alerts 400d
+ *                     (graded alerts are what spike follow-through is learned from).
  *  runMaintenance   — the pass that runs them: intraday jobs every pass, the
  *                     whole-table daily jobs only when their inputs changed.
  */
@@ -28,6 +29,10 @@ import { recordDailyRegime } from './regime-jobs';
 import { logSignals, scoreSignals, trackBackwardationEpisodes } from './signal-jobs';
 import { loadConvictionsIntoEngine, refreshEdgeBooks } from './learning-jobs';
 import { gradeProjections, logProjections, refreshProjectionHistory } from './projection-jobs';
+import { foldIntradayProfiles, loadClocksIntoEngine } from './intraday-jobs';
+import { fillOwnPutCall, loadOwnRangesIntoEngine, repairOwnPutCall } from './own-normal-jobs';
+import { shapeTotals } from './intraday-profile';
+import { gradeSpikeAlerts, loadSpikeBookIntoEngine, SPIKE_HISTORY_DAYS } from './spike-outcome-jobs';
 import type { FlowEngine } from './flow-engine';
 import { finalizeDailyCapture, findThinRelativeDays, loadLatestIntoEngine, recomputeRelativeDay } from './sector-analytics';
 import { NOT_SEEDED } from './seed-guard';
@@ -59,6 +64,8 @@ export async function persistAlert(alert: SpikeAlert): Promise<void> {
         contracts: alert.contracts,
         putCallRatio: alert.putCallRatio,
         createdAt: new Date(alert.createdAt),
+        sectorSpiking: alert.breadth?.spiking ?? null,
+        sectorNames: alert.breadth?.names ?? null,
       },
     }),
   );
@@ -98,20 +105,13 @@ export async function computeBaselines(engine: FlowEngine): Promise<number> {
       if (days.length < 3) continue; // not enough history to be meaningful
       const avg = days.reduce((a, b) => a + b, 0) / days.length;
       const variance = days.reduce((a, b) => a + (b - avg) ** 2, 0) / days.length;
-      const baseline = {
-        avgDailyVolume: avg,
-        stdDevVolume: Math.sqrt(variance),
-        intradayShape: DEFAULT_INTRADAY_SHAPE,
-        sampleDays: days.length,
-      };
+      // The name's learned regular-day clock once there is one (intraday-jobs.ts);
+      // the detector itself reads the clock for the kind of day it is.
+      const learned = engine.clocks?.stocks.get(symbol);
+      const intradayShape = learned ? shapeTotals(learned.shapes.regular) : [...DEFAULT_INTRADAY_SHAPE];
+      const baseline = { avgDailyVolume: avg, stdDevVolume: Math.sqrt(variance), intradayShape, sampleDays: days.length };
       engine.detector.setBaseline(symbol, baseline);
-      computed.push({
-        symbol,
-        avgVolume: avg,
-        stdDevVolume: baseline.stdDevVolume,
-        intradayShape: [...DEFAULT_INTRADAY_SHAPE],
-        sampleDays: days.length,
-      });
+      computed.push({ symbol, avgVolume: avg, stdDevVolume: baseline.stdDevVolume, intradayShape, sampleDays: days.length });
     }
     if (computed.length > 0) await db.volumeBaseline.createMany({ data: computed });
     // The loader reads only the latest row per symbol: drop the rest.
@@ -247,7 +247,7 @@ export async function pruneHistory(): Promise<void> {
     // no close left to pair it with feeds nothing, and unbounded growth at ~1,400
     // names would add ~140 MB a year.
     await db.relativeMetric.deleteMany({ where: { date: { lt: new Date(Date.now() - 400 * DAY_MS) } } });
-    await db.alert.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 120 * DAY_MS) } } });
+    await db.alert.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - SPIKE_HISTORY_DAYS * DAY_MS) } } });
   });
 }
 
@@ -423,6 +423,9 @@ async function captureEndOfDay(engine: FlowEngine, opts: { now?: Date; late?: bo
     // Regime state depends on the finalized SPY close + per-ticker GEX just written;
     // signals fire only once the regime row is final (never on provisional data).
     await recordDailyRegime(engine, now);
+    // Each name's OI put/call against its own previous sessions, stamped on the
+    // rows just pinned: the pc_own signal reads it.
+    await tryDb('own put/call percentile', (db) => fillOwnPutCall(db, etDateKey(now)));
     const emitted = await logSignals(engine, now);
     await trackBackwardationEpisodes(now);
     if (emitted > 0) console.log(`[signals] logged ${emitted} signals for today's session`);
@@ -608,8 +611,22 @@ export async function runMaintenance(engine: FlowEngine): Promise<void> {
   try {
     const key = await dailyInputsKey();
     const daily = key === null || key !== lastDailyKey;
+    if (daily) {
+      // Each name's daily clock: fold the sessions that finished since the last
+      // pass while their 5-minute detail still exists (pruneHistory thins it),
+      // then hand the clocks to the spike detector — before the baselines, which
+      // store the learned shape beside the 20-day average. Not while an
+      // after-hours catch-up is still fetching the close: a session is folded
+      // once, and names without their closing snapshot yet would miss it (the
+      // capture that ends the catch-up triggers another daily pass).
+      if (engine.catchUpRemaining === 0) await foldIntradayProfiles(new Date(), SNAPSHOT_FULL_RES_DAYS);
+      await loadClocksIntoEngine(engine);
+    }
     const baselines = daily ? await computeBaselines(engine) : 0;
     const scored = await scoreAlerts();
+    // What the price did after each alert, by time of day (needs the same 5-minute detail).
+    const spikes = await gradeSpikeAlerts();
+    if (daily || spikes.intraday > 0 || spikes.finished > 0) await loadSpikeBookIntoEngine(engine);
     await recordDailyMetrics(engine);
     await refreshVolContext(engine, key);
     // Phase 3: detect idiosyncratic moves (SPY-residual feed), fill realized moves
@@ -622,6 +639,11 @@ export async function runMaintenance(engine: FlowEngine): Promise<void> {
       // hand (a new database, an import): fill them in and log the signals they
       // missed, before grading, so the learning sees every session it can.
       await repairThinRelativeDays();
+      // Same idea for each name's put/call against its own range: fill stored
+      // sessions that have none yet, log what they would have fired, and refresh
+      // the usual ranges shown beside the live figures.
+      await repairOwnPutCall();
+      await loadOwnRangesIntoEngine(engine);
       // Phase 4.3: fill forward returns for signals whose 20-trading-day window elapsed.
       const sigScored = await scoreSignals();
       if (sigScored > 0) console.log(`[signals] scored ${sigScored} signals (20-td window elapsed)`);

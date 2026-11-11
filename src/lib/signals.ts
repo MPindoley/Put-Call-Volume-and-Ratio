@@ -2,7 +2,9 @@
  * Phase 4 signal grid + conditional-matrix math. All pure and unit-tested.
  *
  * THE GRID IS FIXED (fixed before looking at results — multiple-comparisons
- * discipline). Directional matrix: divergence, skew_z, pc_extreme, spike_alert.
+ * discipline). Directional matrix: divergence, skew_z, pc_extreme, spike_alert,
+ * and pc_own — put/call against the name's OWN usual range (own-normal.ts),
+ * added later with its cutoffs fixed in advance and its own version stamp.
  * Separate tracks: event_badge (rich/cheap vs realized-under/over-implied, its own
  * hit definition and base rate), backwardation and regime_detach
  * (magnitude/episode analysis, no directional hit). A future signal type is a NEW
@@ -12,7 +14,7 @@
  * +2% while the market did +4% is not a hit); raw is an explicit basis toggle.
  */
 
-export const DIRECTIONAL_SIGNALS = ['divergence', 'skew_z', 'pc_extreme', 'spike_alert'] as const;
+export const DIRECTIONAL_SIGNALS = ['divergence', 'skew_z', 'pc_extreme', 'spike_alert', 'pc_own'] as const;
 export const TRACK_SIGNALS = ['event_badge', 'backwardation', 'regime_detach'] as const;
 export type SignalType = (typeof DIRECTIONAL_SIGNALS)[number] | (typeof TRACK_SIGNALS)[number];
 
@@ -45,10 +47,13 @@ export function eligibleFromMetric(dm: {
   putOI: number | null;
   callOI: number | null;
   spikeBaselineDays: number | null;
+  /** The day's OI put/call as a percentile of the name's own earlier sessions; null before it has a normal. */
+  oiPcPct?: number | null;
 }): string[] {
   const out: string[] = [];
   if (dm.putOI !== null && dm.callOI !== null && dm.callOI > 0) out.push('pc_extreme');
   if ((dm.spikeBaselineDays ?? 0) >= 5) out.push('spike_alert');
+  if (dm.oiPcPct !== null && dm.oiPcPct !== undefined) out.push('pc_own');
   return out;
 }
 

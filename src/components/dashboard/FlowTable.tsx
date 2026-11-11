@@ -21,6 +21,7 @@ import { usePersistentState } from '@/hooks/usePersistentState';
 import { COLUMN_DEFS, fitColumns, rowWidth, type ColumnId } from '@/lib/table-columns';
 import { GLOSSARY, type GlossaryEntry, type GlossaryKey } from '@/lib/glossary';
 import { formatMarketCap, marketCapOf } from '@/lib/market-cap';
+import { standing } from '@/lib/own-normal';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
 import { SECTORS } from '@/lib/universe';
 import { selectVisibleRows, useFlowStore, type FlowFilter, type SortKey } from '@/store/flowStore';
@@ -62,7 +63,11 @@ const COLUMN_META: Record<ColumnId, { sort: SortKey | null; align: 'left' | 'rig
     align: 'right',
     title: '25Δ risk reversal (call IV − put IV, vol pts). Negative = normal put skew; positive = calls bid over puts',
   },
-  oiPutCall: { sort: 'oiPutCall', align: 'right', title: 'Open-interest put/call ratio (positioning, not volume)' },
+  oiPutCall: {
+    sort: 'oiPutCall',
+    align: 'right',
+    title: "Open-interest put/call ratio (positioning, not volume). ▲ / ▼ = above / below this name's own usual range",
+  },
   skewZ30: {
     sort: 'skewZ30',
     align: 'right',
@@ -373,12 +378,24 @@ function CellContent({ id, row, pinned }: { id: ColumnId; row: TickerFlow; pinne
             : '—'}
         </span>
       );
-    case 'oiPutCall':
+    case 'oiPutCall': {
+      // ▲ / ▼ = outside the name's OWN usual range (own-normal.ts), whatever the level.
+      const own = standing(row.analytics?.oiPutCall, row.ownPc);
       return (
-        <span className={cn('tnum', (row.analytics?.oiPutCall ?? 1) > 1 ? 'text-bearish' : 'text-bullish')}>
+        <span
+          className={cn('tnum', (row.analytics?.oiPutCall ?? 1) > 1 ? 'text-bearish' : 'text-bullish')}
+          title={
+            row.ownPc
+              ? `Its own usual range: ${row.ownPc.lo.toFixed(2)}–${row.ownPc.hi.toFixed(2)} (median ${row.ownPc.mid.toFixed(2)}, ${row.ownPc.n} sessions)` +
+                (own === 'high' ? ' — unusually put-heavy for this name' : own === 'low' ? ' — unusually call-heavy for this name' : ' — normal for this name')
+              : undefined
+          }
+        >
+          {own === 'high' || own === 'low' ? <span className="mr-0.5 text-[9px] text-slate-300">{own === 'high' ? '▲' : '▼'}</span> : null}
           {row.analytics?.oiPutCall != null ? row.analytics.oiPutCall.toFixed(2) : '—'}
         </span>
       );
+    }
     case 'skewZ30':
       return <ZCell z={row.sectorRelative?.skewZ30 ?? null} window={30} />;
     case 'skewZ90':

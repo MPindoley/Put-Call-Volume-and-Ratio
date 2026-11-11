@@ -14,8 +14,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 import type { Calibration, SignalSummary } from '@/lib/learning';
 import type { CoverageReport, Stage, StageStatus, StockCoverage } from '@/lib/learning-coverage';
 import type { LearningReport } from '@/lib/learning-jobs';
-import type { Coverage, HorizonKey } from '@/lib/projection-history';
+import type { Condition, ConditionFactors, Coverage, HorizonKey } from '@/lib/projection-history';
 import { Term } from '@/components/ui/term';
+import { SpikeTableView } from '@/components/ticker/IntradayCards';
+import type { IntradayLearningResponse } from '@/app/api/learning/intraday/route';
+import type { SignalTimingView } from '@/app/api/learning/route';
+import type { ComboView } from '@/lib/signal-combos';
+import { timingSentence, timingShort, type SignalTiming } from '@/lib/signal-timing';
+import { HORIZON_LABEL, HORIZONS } from '@/lib/spike-outcomes';
 import { cn } from '@/lib/utils';
 
 interface SummaryResponse {
@@ -28,12 +34,17 @@ interface SummaryResponse {
     rowsUnbased: number;
     signals: SignalSummary[];
   } | null;
+  /** The book at the 5-, 10- and 20-session windows, keyed "signalType|direction"; null until built. */
+  timing: { asOf: string; minGraded: number; signals: Record<string, SignalTimingView> } | null;
+  /** Signals firing together against each alone (signal-combos.ts); null until built. */
+  combos: { minGraded: number; pairs: ComboView[] } | null;
 }
 
 const SIGNAL_NAMES: Record<string, string> = {
   skew_z: 'Skew z-score',
   divergence: 'Price / skew divergence',
   pc_extreme: 'OI put/call extreme',
+  pc_own: 'OI put/call vs own range',
   spike_alert: 'Volume spike',
 };
 const REGIME_NAMES: Record<string, string> = {
@@ -90,8 +101,10 @@ export function LearningView(): JSX.Element {
       <CoverageCard />
 
       <LearnedCard data={summary.data} loading={summary.isLoading} />
+      {summary.data?.learning && <CombosCard combos={summary.data.combos} />}
 
       {report.data && <SelfGradeCard c={report.data.selfGrade} />}
+      <TimeOfDayCard />
       <ProjectionRecordCard />
       {report.data && <HealthCard r={report.data} />}
     </div>
@@ -288,6 +301,124 @@ function StockCoverageLine({ c, thresholds: t }: { c: StockCoverage; thresholds:
   );
 }
 
+/**
+ * Time-of-day learning: how many names have a daily clock of their own, how the
+ * kinds of day differ across all names, and what has followed spike alerts.
+ */
+function TimeOfDayCard(): JSX.Element | null {
+  const q = useQuery({
+    queryKey: ['learning-intraday'],
+    queryFn: () => getJson<IntradayLearningResponse>('/api/learning/intraday'),
+    refetchInterval: 300_000,
+  });
+  if (q.isLoading) return <Skeleton className="h-40 w-full" />;
+  if (q.isError || !q.data) return null;
+  const { clock, spikes } = q.data;
+  const firstHour = (k: 'regular' | 'expiry' | 'earnings'): number => clock.all[0]![k] + clock.all[1]![k];
+  const lastHour = (k: 'regular' | 'expiry' | 'earnings'): number => clock.all[11]![k] + clock.all[12]![k];
+  const learnedRows = spikes.table.rows.some((r) => Object.values(r.cells).some((c) => c.rate !== null));
+  return (
+    <Card>
+      <CardHeader
+        title="Time of day"
+        right={<span className="text-[10px] tnum text-slate-500">{clock.asOf ? `clocks through ${clock.asOf}` : 'no sessions folded in yet'}</span>}
+      />
+      <div className="space-y-4 p-4">
+        <p className="text-[11px] leading-relaxed text-slate-500">
+          Two things are learned from the 5-minute data before it is thinned: each stock&apos;s <Term k="dailyClock">daily clock</Term> — when in the
+          session it normally trades, which is what &ldquo;unusual volume&rdquo; is judged against — and what the price has done after spike alerts,
+          by time of day.
+        </p>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <Tile label="Stocks with own sessions" value={`${clock.withOwnData} / ${clock.names}`} sub="the rest use their sector's clock" />
+          <Tile
+            label="Mostly their own clock"
+            value={String(clock.mostlyOwn)}
+            sub={`${clock.params.stockPrior}+ sessions on record; the most any stock has is ${clock.maxSessions}`}
+          />
+          <Tile label="Spike alerts graded" value={String(spikes.episodes)} sub={`${spikes.pending} waiting for a session to settle`} />
+          <Tile
+            label="First hour, all stocks"
+            value={pct(firstHour('regular'))}
+            sub={clock.learned ? `expiry days ${pct(firstHour('expiry'))} · earnings days ${pct(firstHour('earnings'))}` : 'the starting curve, until sessions are folded in'}
+          />
+        </div>
+        {clock.learned && (
+          <p className="text-[11px] text-slate-400">
+            Across all stocks the last hour carries {pct(lastHour('regular'))} of a regular day&apos;s option volume, {pct(lastHour('expiry'))} on a
+            weekly-expiry day and {pct(lastHour('earnings'))} on an earnings day. Each stock&apos;s own clock is on its page, under Time of day.
+          </p>
+        )}
+        <div>
+          <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">
+            After a spike alert — all stocks: how often the price kept going the spike&apos;s way (<Term k="followThrough">follow-through</Term>, vs
+            SPY)
+          </p>
+          {learnedRows ? (
+            <SpikeTableView table={spikes.table} label="all stocks" />
+          ) : (
+            <p className="rounded border border-surface-border px-3 py-4 text-xs text-slate-400">
+              Still learning: {spikes.episodes} spike alert{spikes.episodes === 1 ? '' : 's'} graded so far. A row fills in once {spikes.minRoot}{' '}
+              alerts of that kind (time of day × lean) have been graded.
+            </p>
+          )}
+        </div>
+        <div>
+          <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">
+            One stock, or its sector at once — <Term k="spikeBreadth">lone and sector-wide spikes</Term>, graded apart
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[420px] text-[11px] tnum">
+              <thead className="text-left text-[10px] text-slate-500">
+                <tr>
+                  <th className="py-1 pr-2 font-normal">Spike</th>
+                  {HORIZONS.map((h) => (
+                    <th key={h} className="px-2 py-1 text-right font-normal">
+                      {HORIZON_LABEL[h]}
+                    </th>
+                  ))}
+                  <th className="py-1 pl-2 text-right font-normal">Graded</th>
+                </tr>
+              </thead>
+              <tbody>
+                {spikes.breadth.map((r) => (
+                  <tr key={`${r.kind}-${r.lean}`} className="border-t border-surface-border/50 text-slate-300">
+                    <td className="py-1 pr-2">
+                      <span className="text-slate-200">{r.kind === 'crowd' ? 'Sector-wide' : 'One stock'}</span>{' '}
+                      <span className="text-slate-500">· {r.lean === 'calls' ? 'call-heavy' : 'put-heavy'}</span>
+                    </td>
+                    {HORIZONS.map((h) => {
+                      const c = r.cells[h];
+                      return c.rate === null ? (
+                        <td key={h} className="px-2 py-1 text-right text-slate-600" title="Not enough graded spikes of this kind yet">
+                          —
+                        </td>
+                      ) : (
+                        <td
+                          key={h}
+                          className={cn('px-2 py-1 text-right', Math.abs(c.rate - 0.5) >= 0.05 ? 'font-semibold text-slate-100' : 'text-slate-400')}
+                          title={`Average move the spike's way ${c.avgMove! >= 0 ? '+' : ''}${c.avgMove!.toFixed(2)}% · ${c.n} graded`}
+                        >
+                          {pct(c.rate)}
+                        </td>
+                      );
+                    })}
+                    <td className="py-1 pl-2 text-right text-slate-500">{r.n}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
+            Counted from when this started being recorded; each alert in the feed says which kind it is. A cell fills in at {spikes.minRoot}{' '}
+            graded spikes.
+          </p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 function Tile({ label, value, sub }: { label: string; value: string; sub?: string }): JSX.Element {
   return (
     <div>
@@ -363,6 +494,9 @@ function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loa
                 <th className="py-1 text-right font-normal" title="Learned edge: points above base, ± approximate standard error">
                   Learned edge
                 </th>
+                <th className="py-1 pl-4 text-right font-normal">
+                  <Term k="signalTiming">Plays out over</Term>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -370,7 +504,13 @@ function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loa
                 const key = `${s.signalType}|${s.direction}`;
                 const expanded = open === key;
                 return (
-                  <SignalRows key={key} s={s} expanded={expanded} toggle={() => setOpen(expanded ? null : key)} />
+                  <SignalRows
+                    key={key}
+                    s={s}
+                    timing={data?.timing?.signals[key] ?? null}
+                    expanded={expanded}
+                    toggle={() => setOpen(expanded ? null : key)}
+                  />
                 );
               })}
             </tbody>
@@ -378,7 +518,8 @@ function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loa
           <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
             <span className="text-slate-400">How to read this:</span> &ldquo;+4.0 pts&rdquo; means the signal lands on the predicted
             side 4 percentage points more often than the stock does on an ordinary day in the same market conditions. Zero means no
-            demonstrated edge. Click a signal to see it by market regime.
+            demonstrated edge. &ldquo;Plays out over&rdquo; compares the same signals graded after 5, 10 and 20 sessions. Click a signal to
+            see its edge at each window and by market regime.
             {l.rowsUnbased > 0 && ` ${l.rowsUnbased} graded signals had no base rate to compare against and were left out rather than guessed.`}
           </p>
         </div>
@@ -387,7 +528,110 @@ function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loa
   );
 }
 
-function SignalRows({ s, expanded, toggle }: { s: SignalSummary; expanded: boolean; toggle: () => void }): JSX.Element {
+const COMBO_VERDICT: Record<ComboView['verdict'], { label: string; cls: string }> = {
+  stronger: { label: 'Stronger together', cls: 'font-semibold text-slate-100' },
+  weaker: { label: 'Weaker together', cls: 'font-semibold text-slate-100' },
+  same: { label: 'No clear difference', cls: 'text-slate-400' },
+  learning: { label: 'Learning', cls: 'text-slate-500' },
+};
+
+/** Signals together (signal-combos.ts): two signals agreeing on a stock, against each on its own. */
+function CombosCard({ combos }: { combos: SummaryResponse['combos'] }): JSX.Element {
+  const name = (t: string): string => SIGNAL_NAMES[t] ?? t;
+  return (
+    <Card>
+      <CardHeader title="Signals together" />
+      {!combos || combos.pairs.length === 0 ? (
+        <p className="p-4 text-xs text-slate-400">
+          {combos
+            ? 'No two signals have fired on the same stock, the same day and the same way among the graded signals yet.'
+            : 'Built with the next nightly learning run.'}
+        </p>
+      ) : (
+        <div className="overflow-x-auto p-4">
+          <table className="w-full min-w-[640px] text-xs tnum">
+            <thead className="text-left text-[10px] uppercase tracking-wider text-slate-500">
+              <tr>
+                <th className="py-1 font-normal">Both pointing the same way</th>
+                <th className="py-1 text-right font-normal">Days together</th>
+                <th className="py-1 text-right font-normal">
+                  <Term k="signalsTogether">Together</Term>
+                </th>
+                <th className="py-1 text-right font-normal">First alone</th>
+                <th className="py-1 text-right font-normal">Second alone</th>
+                <th className="py-1 text-right font-normal" title="What the scanner's lean assumes when it combines the two: signed sum ÷ √2">
+                  As the lean combines them
+                </th>
+                <th className="py-1 pl-4 font-normal">Verdict</th>
+              </tr>
+            </thead>
+            <tbody>
+              {combos.pairs.map((c) => (
+                <tr key={`${c.a}|${c.b}|${c.direction}`} className="border-t border-surface-border/50 text-slate-300">
+                  <td className="py-1.5">
+                    {name(c.a)} + {name(c.b)} <span className={c.direction === 'bullish' ? 'text-bullish' : 'text-bearish'}>{c.direction}</span>
+                  </td>
+                  <td className="py-1.5 text-right">{c.n}</td>
+                  <td className="py-1.5 text-right">
+                    {c.together === null ? (
+                      <span className="text-slate-600">
+                        {c.n}/{combos.minGraded}
+                      </span>
+                    ) : (
+                      <>
+                        {pts(c.together)} <span className="text-slate-500">± {(c.se * 100).toFixed(1)}</span>
+                      </>
+                    )}
+                  </td>
+                  <td className="py-1.5 text-right text-slate-400" title={`${c.nA} days without the second`}>
+                    {pts(c.aAlone)}
+                  </td>
+                  <td className="py-1.5 text-right text-slate-400" title={`${c.nB} days without the first`}>
+                    {pts(c.bAlone)}
+                  </td>
+                  <td className="py-1.5 text-right text-slate-500">{pts(c.assumed)}</td>
+                  <td className={cn('py-1.5 pl-4', COMBO_VERDICT[c.verdict].cls)}>{COMBO_VERDICT[c.verdict].label}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+            Points above the ordinary-day rate, as in the table above. &ldquo;Together&rdquo; is the days both signals fired on a stock pointing the
+            same way; &ldquo;alone&rdquo; is the days one fired without the other. A pair is called stronger or weaker only when the difference
+            clears 2 points and its own margin of error, after {combos.minGraded} days together. The scanner&apos;s lean keeps its fixed way of
+            combining signals — the last number column — because that is what the site grades itself on; this shows whether that assumption
+            holds.
+          </p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** "5 sessions +1.2 · 10 sessions +3.1 · 20 sessions +2.0" */
+const windowEdges = (t: SignalTiming): string => t.windows.map((w) => `${w.horizon} sessions ${pts(w.edge)}`).join(' · ');
+
+function TimingCell({ t, className }: { t: SignalTiming | null | undefined; className?: string }): JSX.Element {
+  if (!t) return <td className={cn('pl-4 text-right text-slate-600', className)}>—</td>;
+  const settled = t.verdict !== 'learning' && t.verdict !== 'none';
+  return (
+    <td className={cn('pl-4 text-right', settled ? 'text-slate-200' : 'text-slate-500', className)} title={`${timingSentence(t)} Edge by window: ${windowEdges(t)} pts.`}>
+      {timingShort(t)}
+    </td>
+  );
+}
+
+function SignalRows({
+  s,
+  timing,
+  expanded,
+  toggle,
+}: {
+  s: SignalSummary;
+  timing: SignalTimingView | null;
+  expanded: boolean;
+  toggle: () => void;
+}): JSX.Element {
   const tone = Math.abs(s.edge) < 0.01 ? 'text-slate-400' : s.edge > 0 ? 'text-bullish' : 'text-bearish';
   return (
     <>
@@ -406,7 +650,16 @@ function SignalRows({ s, expanded, toggle }: { s: SignalSummary; expanded: boole
         <td className={cn('py-1.5 text-right font-semibold', tone)}>
           {pts(s.edge)} <span className="font-normal text-slate-500">± {(s.se * 100).toFixed(1)}</span>
         </td>
+        <TimingCell t={timing?.all} className="py-1.5" />
       </tr>
+      {expanded && timing && (
+        <tr className="text-[11px] text-slate-400">
+          <td colSpan={6} className="py-1 pl-6">
+            <span className="text-slate-300">{timingSentence(timing.all)}</span>{' '}
+            {timing.all.verdict !== 'learning' && <span className="text-slate-500">Edge by window: {windowEdges(timing.all)} pts.</span>}
+          </td>
+        </tr>
+      )}
       {expanded &&
         s.regimes.map((r) => (
           <tr key={r.regime} className="text-[11px] text-slate-400">
@@ -415,6 +668,7 @@ function SignalRows({ s, expanded, toggle }: { s: SignalSummary; expanded: boole
             <td className="py-0.5 text-right">{pts(r.raw)}</td>
             <td className="py-0.5 text-right">{pct(r.evidence)}</td>
             <td className="py-0.5 text-right">{pts(r.edge)}</td>
+            <TimingCell t={timing?.regimes[r.regime]} className="py-0.5" />
           </tr>
         ))}
     </>
@@ -550,6 +804,64 @@ function HealthCard({ r }: { r: LearningReport }): JSX.Element {
 interface ProjectionCoverageResponse {
   all: Record<HorizonKey, Coverage> | null;
   bySector: Record<string, Record<HorizonKey, Coverage>>;
+  /** How conditions scale real moves against priced ones, all names (projection-history.ts); null until computed. */
+  conditions: Record<HorizonKey, ConditionFactors> | null;
+}
+
+const CONDITION_ROWS: { condition: Condition; index: 0 | 1; label: string }[] = [
+  { condition: 'vol', index: 1, label: 'Market stressed' },
+  { condition: 'vol', index: 0, label: 'Market calm' },
+  { condition: 'iv', index: 1, label: "Stock's IV above its usual" },
+  { condition: 'iv', index: 0, label: "Stock's IV below its usual" },
+  { condition: 'earnings', index: 1, label: 'Earnings inside the window' },
+  { condition: 'earnings', index: 0, label: 'No earnings inside' },
+];
+
+/** When real moves run bigger or smaller than usual against what options priced, across all names. */
+function ConditionsTable({ c }: { c: Record<HorizonKey, ConditionFactors> }): JSX.Element {
+  const cell = (f: ConditionFactors[Condition][0]): JSX.Element => (
+    <>
+      <td className={cn('py-1 text-right', Math.abs(f.factor - 1) >= 0.05 ? 'font-semibold text-slate-100' : 'text-slate-400')}>
+        {f.factor.toFixed(2)}×
+      </td>
+      <td className="py-1 text-right text-slate-500">{f.raw === null ? '—' : `${f.raw.toFixed(2)}×`}</td>
+      <td className="py-1 text-right text-slate-500">{f.periods}</td>
+    </>
+  );
+  return (
+    <div className="overflow-x-auto border-t border-surface-border p-4">
+      <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">
+        How big the move — <Term k="conditionFactor">by condition</Term>, all names
+      </p>
+      <table className="w-full min-w-[560px] text-xs tnum">
+        <thead className="text-left text-[10px] uppercase tracking-wider text-slate-500">
+          <tr>
+            <th className="py-1 font-normal">At the start of the window</th>
+            <th className="py-1 text-right font-normal">~1 week: used</th>
+            <th className="py-1 text-right font-normal">raw</th>
+            <th className="py-1 text-right font-normal">periods</th>
+            <th className="py-1 text-right font-normal">~1 month: used</th>
+            <th className="py-1 text-right font-normal">raw</th>
+            <th className="py-1 text-right font-normal">periods</th>
+          </tr>
+        </thead>
+        <tbody>
+          {CONDITION_ROWS.map((r) => (
+            <tr key={r.label} className="border-t border-surface-border/50 text-slate-300">
+              <td className="py-1">{r.label}</td>
+              {cell(c.week[r.condition][r.index])}
+              {cell(c.month[r.condition][r.index])}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="mt-3 text-[10px] leading-relaxed text-slate-500">
+        1.15× means real moves ran 15% bigger than usual, against what options priced, when that condition held at the start. &ldquo;Raw&rdquo;
+        is straight from the data; &ldquo;used&rdquo; is pulled toward 1.00× until enough independent periods of that condition have been seen.
+        Each stock&apos;s projected range is scaled by the conditions it is in.
+      </p>
+    </div>
+  );
 }
 
 /**
@@ -623,6 +935,7 @@ function ProjectionRecordCard(): JSX.Element {
           </p>
         </div>
       )}
+      {q.data?.conditions && <ConditionsTable c={q.data.conditions} />}
     </Card>
   );
 }

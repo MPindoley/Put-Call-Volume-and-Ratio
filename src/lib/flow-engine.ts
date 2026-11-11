@@ -30,17 +30,20 @@ import type {
 import { DEFAULT_SETTINGS } from '@/types';
 import { computeChainAnalytics } from './chain-analytics';
 import { computeProjection, type Projection } from './projection';
-import type { CalibrationView, Coverage, HorizonKey } from './projection-history';
+import type { CalibrationView, ConditionFactors, Coverage, HorizonKey } from './projection-history';
 import { MIN_COVERAGE_MS, pruneIntervals, windowFlow, type FlowInterval } from './flow-window';
 import { buildEventGauge, type EventGaugeInput } from './event-analytics';
 import { classifyOiFlow, defaultInstrument, sideIvChanges, type InstrumentConfig } from './interpretation';
 import { apiStats } from './data-source';
+import type { OwnRange } from './own-normal';
 import type { OptionsChainAggregate } from './provider';
 import { aggregateRatio, percentileRank, putCallRatio, sectorRatios } from './ratio-calculator';
-import { SpikeDetector } from './spike-detector';
-import { etDateKey, isTradingDayNow } from './trading-calendar';
+import { shapeTotals, type ClockBook } from './intraday-profile';
+import { SpikeDetector, type ClockShapes } from './spike-detector';
+import { followThroughNote, isCrowd, leanOf, type SpikeBook } from './spike-outcomes';
+import { etDateKey, etTimeParts, isTradingDayNow, sessionBounds } from './trading-calendar';
 import { sectorOf } from './universe';
-import { isMarketHours } from './utils';
+import { isMarketHours, minutesSinceOpen } from './utils';
 
 const SPARKLINE_POINTS = 30; // 1-min resolution, 30 minutes
 const MAX_ALERTS = 200;
@@ -127,6 +130,14 @@ export class FlowEngine {
   readonly convictions = new Map<string, TickerConviction>();
   /** Shares outstanding by symbol (market-cap.ts), stamped onto rows as they arrive. */
   readonly shares = new Map<string, number>();
+  /** Each name's own usual OI put/call range (own-normal-jobs.ts), stamped onto rows as they arrive. */
+  readonly ownPc = new Map<string, OwnRange>();
+  /** Every name's learned daily clock (intraday-jobs.ts); null until one is loaded. */
+  clocks: ClockBook | null = null;
+  /** Latest session folded into the clocks (YYYY-MM-DD). */
+  clocksAsOf: string | null = null;
+  /** What has followed past spike alerts, by time of day (spike-outcome-jobs.ts); null until loaded. */
+  spikeBook: SpikeBook | null = null;
   /**
    * Per-ticker market-implied projection from the latest chain (projection.ts).
    * Served to the ticker page only — never broadcast with the table rows.
@@ -134,6 +145,8 @@ export class FlowEngine {
   readonly projections = new Map<string, Projection>();
   /** Per-ticker realized-vs-implied calibration by horizon, refreshed nightly (projection-jobs.ts). */
   readonly calibrations = new Map<string, Record<HorizonKey, CalibrationView>>();
+  /** How conditions (market stress, IV level, earnings) scale realized ÷ implied across all names, refreshed nightly. */
+  conditionFactors: Record<HorizonKey, ConditionFactors> | null = null;
   /** Graded-projection coverage across all names and per sector, refreshed nightly. */
   projectionCoverage: { all: Record<HorizonKey, Coverage>; bySector: Map<string, Record<HorizonKey, Coverage>> } | null = null;
   marketContext: MarketContext | null = null;
@@ -229,6 +242,7 @@ export class FlowEngine {
       sectorRelative: this.sectorRelatives.get(agg.symbol) ?? null,
       conviction: this.convictions.get(agg.symbol) ?? null,
       sharesOutstanding: this.shares.get(agg.symbol) ?? null,
+      ownPc: this.ownPc.get(agg.symbol) ?? null,
       eventGauge,
       idiosyncraticMoves: this.idiosyncraticMoves.get(agg.symbol) ?? [],
       lastUpdated: now,
@@ -378,9 +392,63 @@ export class FlowEngine {
             contracts: putVolume + callVolume,
             putCallRatio: Number(ratio.toFixed(3)),
             createdAt: now,
+            followThrough: this.followThroughFor(agg.symbol, ratio, now),
+            breadth: this.sectorBreadth(agg.symbol, ratio, m.asOf),
           }
         : null;
     return { fields, alert };
+  }
+
+  /**
+   * How much of the alerting name's sector is spiking right now — one name, or
+   * the sector at once (spike-outcomes.ts). Counts names holding this session's
+   * data; the alerting name counts itself (its own row is not updated yet).
+   */
+  private sectorBreadth(symbol: string, ratio: number, asOf: number): SpikeAlert['breadth'] {
+    const sector = sectorOf(symbol);
+    if (sector === 'ETF' || sector === 'Unknown') return null;
+    const session = etDateKey(new Date(asOf)).getTime();
+    const puts = leanOf(ratio) === 'puts';
+    let names = 1;
+    let spiking = 1;
+    let sameLean = 1;
+    for (const [other, state] of this.tickers) {
+      const f = state.flow;
+      if (other === symbol || f.sector !== sector || f.dataAsOf <= 0 || etDateKey(new Date(f.dataAsOf)).getTime() !== session) continue;
+      names += 1;
+      if (f.spikeLevel === 'normal') continue;
+      spiking += 1;
+      if (f.putCallRatio > 1 === puts) sameLean += 1;
+    }
+    return { sector, spiking, sameLean, names, crowd: isCrowd(spiking, names) };
+  }
+
+  /** What past spikes like this one were followed by, when enough are graded (spike-outcomes.ts). */
+  private followThroughFor(symbol: string, ratio: number, now: number): SpikeAlert['followThrough'] {
+    if (!this.spikeBook) return null;
+    const at = new Date(now);
+    const sector = sectorOf(symbol);
+    const closeMin = sessionBounds(etTimeParts(at).dateKey)?.closeMin ?? 390;
+    return followThroughNote(this.spikeBook, { symbol, sector, isEtf: sector === 'ETF' }, minutesSinceOpen(at), leanOf(ratio), closeMin);
+  }
+
+  /**
+   * Replace the learned daily clocks (intraday-jobs.ts): the spike detector
+   * then judges each name's volume against its own profile for the kind of day
+   * it is. `earningsSessions` are the ET dates each name reacts to earnings on.
+   */
+  setClocks(book: ClockBook, earningsSessions: ReadonlyMap<string, ReadonlySet<string>>, asOf: string | null): void {
+    this.clocks = book;
+    this.clocksAsOf = asOf;
+    const shapes = new Map<string, ClockShapes>();
+    for (const [symbol, c] of book.stocks) {
+      shapes.set(symbol, {
+        regular: shapeTotals(c.shapes.regular),
+        expiry: shapeTotals(c.shapes.expiry),
+        earnings: shapeTotals(c.shapes.earnings),
+      });
+    }
+    this.detector.setClocks(shapes, earningsSessions);
   }
 
   /** Recompute aggregate + sector ratios; call once per completed poll cycle. */
@@ -465,6 +533,13 @@ export class FlowEngine {
       touched.push(state.flow);
     }
     return touched;
+  }
+
+  /** Replace every name's own usual OI put/call range and stamp it onto existing rows. */
+  setOwnPc(next: ReadonlyMap<string, OwnRange>): void {
+    this.ownPc.clear();
+    for (const [symbol, r] of next) this.ownPc.set(symbol, r);
+    for (const [symbol, state] of this.tickers) state.flow.ownPc = this.ownPc.get(symbol) ?? null;
   }
 
   applyQuotes(quotes: { symbol: string; price: number; changePct: number | null; at: number }[]): TickerFlow[] {

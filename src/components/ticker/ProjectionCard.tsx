@@ -13,7 +13,7 @@ import { Card, CardHeader } from '@/components/ui/card';
 import { Term } from '@/components/ui/term';
 import type { ExpiryProjection, Projection } from '@/lib/projection';
 import { calibratedPrice, probAboveLevel } from '@/lib/projection';
-import type { CalibrationView, Coverage, HorizonKey } from '@/lib/projection-history';
+import { ratioInForce, type CalibrationView, type Coverage, type HorizonKey } from '@/lib/projection-history';
 import { cn, formatTime } from '@/lib/utils';
 import type { TickerFlow } from '@/types';
 
@@ -22,6 +22,13 @@ export interface ProjectionCoverage {
   sector: Record<HorizonKey, Coverage> | null;
   all: Record<HorizonKey, Coverage> | null;
 }
+
+/** The states of each condition (projection-history.ts), in words. */
+const CONDITION_TEXT: Record<string, Record<string, string>> = {
+  vol: { calm: 'calm market', stressed: 'stressed market' },
+  iv: { high: 'IV above its usual', low: 'IV below its usual' },
+  earnings: { inside: 'earnings inside the window', none: 'no earnings inside the window' },
+};
 
 const money = (v: number): string => `$${v >= 1000 ? v.toFixed(0) : v >= 100 ? v.toFixed(1) : v.toFixed(2)}`;
 const pct = (v: number | null, digits = 0): string => (v === null ? '—' : `${(v * 100).toFixed(digits)}%`);
@@ -170,8 +177,8 @@ function RangeBar({
   const inView = (v: number | null): v is number => v !== null && v > lo && v < hi;
   const adj = cal?.usable
     ? {
-        lo: calibratedPrice(q16, e.forward, cal.ratio),
-        hi: calibratedPrice(q84, e.forward, cal.ratio),
+        lo: calibratedPrice(q16, e.forward, ratioInForce(cal)),
+        hi: calibratedPrice(q84, e.forward, ratioInForce(cal)),
       }
     : null;
   const markers = [
@@ -420,11 +427,28 @@ function HistoryCheck({
             <span className="font-semibold tnum text-slate-200">{cal.ratio.toFixed(2)}×</span> ({pct(cal.tickerWeight)} from this
             stock).
           </p>
+          {cal.conditional && cal.conditional.applied.length > 0 && (
+            <p className="mt-1">
+              In <Term k="conditionFactor">conditions like now</Term> —{' '}
+              {cal.conditional.applied.map((a, i) => (
+                <span key={a.condition}>
+                  {i > 0 && ', '}
+                  {CONDITION_TEXT[a.condition]?.[a.state] ?? a.state}{' '}
+                  {a.periods > 0 ? (
+                    <span className="tnum text-slate-300">×{a.factor.toFixed(2)}</span>
+                  ) : (
+                    <span className="text-slate-500">(no history of that yet)</span>
+                  )}
+                </span>
+              ))}{' '}
+              — the estimate is <span className="font-semibold tnum text-slate-200">{cal.conditional.ratio.toFixed(2)}×</span>.
+            </p>
+          )}
           {cal.usable ? (
             <p className="mt-1 text-slate-300">
               <Term k="adjustedRange">History-adjusted 68% range</Term>:{' '}
               <span className="font-semibold tnum">
-                {money(calibratedPrice(q16, e.forward, cal.ratio))} – {money(calibratedPrice(q84, e.forward, cal.ratio))}
+                {money(calibratedPrice(q16, e.forward, ratioInForce(cal)))} – {money(calibratedPrice(q84, e.forward, ratioInForce(cal)))}
               </span>
             </p>
           ) : (
