@@ -7,6 +7,7 @@
  */
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardHeader } from '@/components/ui/card';
+import { MoreDetail } from '@/components/ui/more-detail';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Term } from '@/components/ui/term';
 import type { GlossaryKey } from '@/lib/glossary';
@@ -88,9 +89,11 @@ export function RelationshipsCard({ symbol }: { symbol: string }): JSX.Element {
             SPY. As history accumulates, this shows which measurements have tended to come before moves, which move together, and
             what followed setups like today&apos;s. Exploratory: every figure shows how much history it rests on.
           </p>
-          <Leads report={q.data} />
           <Analogs report={q.data} />
-          <Matrix report={q.data} />
+          <Leads report={q.data} />
+          <MoreDetail id="relationships-matrix" label="which of its measurements move together">
+            <Matrix report={q.data} />
+          </MoreDetail>
         </div>
       )}
     </Card>
@@ -195,7 +198,8 @@ function Analogs({ report }: { report: RelationshipsReport }): JSX.Element {
             Typical outcome {retPct(s.median)} vs SPY (middle half {retPct(s.q1)} to {retPct(s.q3)}); all sessions {retPct(s.baseMedian)} ·
             average <Term k="analogDistance">distance</Term> {s.avgDistance.toFixed(2)}
           </p>
-          <div className="mt-2 max-h-56 overflow-auto">
+          <MoreDetail id="relationships-analogs" label={`the ${a.analogs.length} past setups one by one`} className="mt-2">
+          <div className="max-h-56 overflow-auto">
             <table className="w-full text-[11px] tnum">
               <thead className="sticky top-0 bg-surface-raised text-left text-[10px] text-slate-500">
                 <tr>
@@ -217,6 +221,7 @@ function Analogs({ report }: { report: RelationshipsReport }): JSX.Element {
               </tbody>
             </table>
           </div>
+          </MoreDetail>
         </>
       )}
     </div>

@@ -10,6 +10,7 @@ import { useMemo, type MouseEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardHeader } from '@/components/ui/card';
 import { CollapsibleSection, useSections, type Sections } from '@/components/ui/collapsible';
+import { DetailToggle, useDetail } from '@/components/ui/more-detail';
 import { SpikeBadge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { QUOTE_STALE_MS } from '@/components/ui/conviction';
@@ -743,6 +744,7 @@ const pts = (x: number): string => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}`
  * above.
  */
 function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackRecord | null }): JSX.Element | null {
+  const [levels, toggleLevels] = useDetail('track-levels');
   if (!record) return null;
   const c = flow.conviction;
   return (
@@ -788,6 +790,7 @@ function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackReco
                       )}
                     </p>
                   )}
+                  {levels && (
                   <table className="mt-1 w-full text-[11px] tnum">
                     <thead className="text-left text-[9px] uppercase tracking-wider text-slate-600">
                       <tr>
@@ -822,13 +825,19 @@ function TrackRecordCard({ flow, record }: { flow: TickerFlow; record: TrackReco
                       ))}
                     </tbody>
                   </table>
+                  )}
                 </div>
               ))}
             </div>
-            <p className="mt-2 text-[10px] leading-relaxed text-slate-600">
-              Each level starts from the one above and moves only as far as its own evidence earns. Low weight means
-              &ldquo;not enough history here yet&rdquo; — the estimate leans on the broader record instead of a small sample.
-            </p>
+            <div className="mt-2">
+              <DetailToggle open={levels} onToggle={toggleLevels} label="how each estimate was built, level by level" />
+            </div>
+            {levels && (
+              <p className="mt-2 text-[10px] leading-relaxed text-slate-600">
+                Each level starts from the one above and moves only as far as its own evidence earns. Low weight means
+                &ldquo;not enough history here yet&rdquo; — the estimate leans on the broader record instead of a small sample.
+              </p>
+            )}
           </div>
         )}
 

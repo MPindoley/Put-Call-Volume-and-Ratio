@@ -11,6 +11,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Card, CardHeader } from '@/components/ui/card';
 import { CollapsibleSection, useSections } from '@/components/ui/collapsible';
 import { GlanceBlock, GlanceTile } from '@/components/ui/glance';
+import { MoreDetail } from '@/components/ui/more-detail';
 import { PageHeader } from '@/components/shell/PageHeader';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Calibration, SignalSummary } from '@/lib/learning';
@@ -467,7 +468,7 @@ function TimeOfDayCard(): JSX.Element {
             </p>
           )}
         </div>
-        <div>
+        <MoreDetail id="spike-breadth" label="lone spikes against sector-wide ones">
           <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">
             One stock, or its sector at once — <Term k="spikeBreadth">lone and sector-wide spikes</Term>, graded apart
           </p>
@@ -517,7 +518,7 @@ function TimeOfDayCard(): JSX.Element {
             Counted from when this started being recorded; each alert in the feed says which kind it is. A cell fills in at {spikes.minRoot}{' '}
             graded spikes.
           </p>
-        </div>
+        </MoreDetail>
       </div>
     </Card>
   );
@@ -785,6 +786,9 @@ function SelfGradeCard({ c }: { c: Calibration }): JSX.Element {
                 : 'at or below zero: so far its leans have not beaten simply knowing each stock’s usual behaviour. That is the system telling the truth, not a fault in it.'}
           </p>
 
+          {(c.bins.length > 0 || c.byMonth.length > 0) && (
+          <MoreDetail id="self-grade" label="the breakdown by strength of call and month by month">
+          <div className="space-y-4">
           {c.bins.length > 0 && (
             <div>
               <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">Did strong calls deliver more than weak ones?</p>
@@ -831,6 +835,9 @@ function SelfGradeCard({ c }: { c: Calibration }): JSX.Element {
                 ))}
               </div>
             </div>
+          )}
+          </div>
+          </MoreDetail>
           )}
         </div>
       )}

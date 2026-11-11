@@ -10,6 +10,7 @@
  */
 import { useState } from 'react';
 import { Card, CardHeader } from '@/components/ui/card';
+import { MoreDetail } from '@/components/ui/more-detail';
 import { Term } from '@/components/ui/term';
 import type { ExpiryProjection, Projection } from '@/lib/projection';
 import { calibratedPrice, probAboveLevel } from '@/lib/projection';
@@ -132,20 +133,24 @@ export function ProjectionCard({
 
         <RangeBar e={e} spot={spot} projection={projection} cal={cal} />
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <Cone projection={projection} spot={spot} selected={idx} />
-          <OddsTable e={e} spot={spot} projection={projection} />
-        </div>
-
+        {/* How far to trust the range, and which way the learned record leans — the two things the range alone cannot say. */}
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <HistoryCheck e={e} cal={cal} horizon={horizon} />
-          <TrackRecord coverage={coverage} horizon={horizon} />
-        </div>
-
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          <PositioningBlock projection={projection} spot={spot} />
           <TiltBlock flow={flow} />
         </div>
+
+        <MoreDetail id="projection" label="the odds by price level, the cone across expiries, the graded record and positioning">
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <Cone projection={projection} spot={spot} selected={idx} />
+              <OddsTable e={e} spot={spot} projection={projection} />
+            </div>
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <TrackRecord coverage={coverage} horizon={horizon} />
+              <PositioningBlock projection={projection} spot={spot} />
+            </div>
+          </div>
+        </MoreDetail>
 
         <p className="text-[10px] leading-relaxed text-slate-600">
           Mathematics on traded option prices, not a forecast: these are the market&apos;s risk-neutral odds, which include what
