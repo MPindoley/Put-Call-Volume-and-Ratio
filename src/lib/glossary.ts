@@ -18,6 +18,49 @@ export interface GlossaryEntry {
 }
 
 export const GLOSSARY = {
+  // ── At a glance (the six tiles at the top of a stock page) ──
+  glanceFlow: {
+    term: 'Flow now',
+    what: 'Which side of the options market is busier right now, and how busy it is against this stock’s own normal for this time of day.',
+    how: 'Put/call ratio of the volume in the latest window: 1.1 or more reads put-heavy, 0.6 or less call-heavy, in between balanced (single stocks usually run 0.5–0.8). Volume is today’s so far ÷ what is usual by now.',
+    read: 'A lean that arrives on 2–3× usual volume matters far more than one on a quiet day. Treat it as a prompt to look closer, then check the track record for whether such flow has meant anything for this stock.',
+    caveat: 'Volume counts every trade — buying and selling, opening and closing — so put-heavy is not automatically bearish.',
+  },
+  glancePositioning: {
+    term: 'Positioning',
+    what: 'Whether the contracts people are holding (open interest) lean more to puts or to calls than is normal for this particular stock.',
+    how: 'Today’s open-interest put/call ratio against the stock’s own usual range: the 5th to 95th percentile of its last 120 sessions.',
+    read: '“Normal for it” means nothing unusual, whatever the level. “Unusually put-heavy” or “call-heavy” means outside its own range. It moves more slowly than volume, so it says more about positions held than about today’s trading.',
+    caveat: 'Needs about two months of captured sessions before a range exists.',
+  },
+  glancePricing: {
+    term: 'Option prices',
+    what: 'How expensive this stock’s options are compared with its own past year.',
+    how: 'IV rank: where today’s 30-day implied volatility sits among its stored daily values, 0 (cheapest) to 100 (dearest). 75 or more reads expensive, 25 or less cheap.',
+    read: 'Expensive options mean the market expects bigger moves than usual, often ahead of earnings or news. Compare with realized volatility: implied well above realized means traders are paying up for protection or a catalyst.',
+    caveat: 'The rank needs 20+ stored sessions and matures toward a full year.',
+  },
+  glanceMove: {
+    term: 'Expected move',
+    what: 'How far option prices say the stock is likely to move by the expiry about a week out.',
+    how: 'Half the width of the 68% range — the 16th to 84th percentile of the price distribution that expiry’s options imply — as a percentage of today’s price.',
+    read: 'About two times in three the stock should finish inside the range shown. It is a size, not a direction. “Real moves have run 0.8× priced” means this stock has historically moved less than its options priced.',
+    caveat: 'Market-implied, not a forecast: it includes what traders pay for protection, so it usually overstates real moves a little.',
+  },
+  glanceLean: {
+    term: 'Learned lean',
+    what: 'Which way this session’s signals point for this stock, weighted by how well each signal has actually worked in the past.',
+    how: 'Each firing signal’s learned edge — points above the base rate of beating SPY over 10 sessions — signed and combined.',
+    read: '+4 means such signals have beaten SPY about 4 percentage points more often than normal. Bigger numbers, and more signals agreeing, mean more evidence. “No signal today” means nothing with a record fired.',
+    caveat: 'A statement about past frequencies, not a promise.',
+  },
+  glanceComing: {
+    term: 'Coming up',
+    what: 'The next dated catalyst the options are pricing — usually earnings — and how big a move is priced for it.',
+    how: 'The date comes from the earnings calendar or, when unconfirmed (“possible”), from an expiry carrying extra implied volatility. The priced move separates the event itself from ordinary day-to-day movement.',
+    read: 'Ranges and option prices that span this date include the event. “Rich” means more is priced than the stock’s past reactions; “cheap” means less.',
+  },
+
   // ── Flow ──
   putCallRatio: {
     term: 'Put/Call ratio',

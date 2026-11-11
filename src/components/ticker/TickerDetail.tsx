@@ -12,17 +12,18 @@ import { Card, CardHeader } from '@/components/ui/card';
 import { CollapsibleSection, useSections, type Sections } from '@/components/ui/collapsible';
 import { SpikeBadge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ConvictionCell, QUOTE_STALE_MS } from '@/components/ui/conviction';
+import { QUOTE_STALE_MS } from '@/components/ui/conviction';
 import { Sparkline } from '@/components/dashboard/Sparkline';
 import { Term } from '@/components/ui/term';
 import type { GlossaryKey } from '@/lib/glossary';
 import { formatMarketCap, marketCapOf } from '@/lib/market-cap';
 import type { Projection } from '@/lib/projection';
 import type { CalibrationView, HorizonKey } from '@/lib/projection-history';
+import { AtAGlance } from './AtAGlance';
 import { ProjectionCard, type ProjectionCoverage } from './ProjectionCard';
 import { standing } from '@/lib/own-normal';
 import { timingSentence, timingShort } from '@/lib/signal-timing';
-import { sectionHeadlines, type SectionId } from '@/lib/ticker-summary';
+import { sectionHeadlines, type SectionId, type SummaryInput } from '@/lib/ticker-summary';
 import { IntradayCards } from './IntradayCards';
 import { RelationshipsCard } from './RelationshipsCard';
 import { cn, formatCompact, formatPremium, formatRatio, formatTime } from '@/lib/utils';
@@ -150,9 +151,9 @@ function HeaderStat({
 
 /**
  * Sticky page header: where you are (Scanner › sector › symbol), the live
- * price and the numbers you came for (learned lean, P/C, unusual activity,
- * IV), pin-to-scanner, and a bar that opens any section below (the open ones
- * are lit) or opens and closes them all.
+ * price, how unusual the activity is, size and data age, pin-to-scanner, and a
+ * bar that opens any section below (the open ones are lit) or opens and closes
+ * them all. The reading of the stock itself is the at-a-glance block under it.
  */
 function TickerHeader({
   symbol,
@@ -238,29 +239,13 @@ function TickerHeader({
 
           {flow && (
             <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
-              <HeaderStat label="Learned lean" term="conviction" title="Signals from the latest session, weighted by how well each has actually worked — see Track record">
-                <a href="#track-record" className="hover:opacity-80" title="Open the track record">
-                  <ConvictionCell row={flow} />
-                </a>
-              </HeaderStat>
-              <HeaderStat label="P/C 5m" term="putCallRatio">
-                <span className={cn('font-semibold tnum', flow.putCallRatio > 1 ? 'text-bearish' : 'text-bullish')}>
-                  {formatRatio(flow.putCallRatio)}
-                </span>
-              </HeaderStat>
-              <HeaderStat label="Unusual" term="unusual" title={`Volume ${flow.volumeVsExpected.toFixed(1)}× expected`}>
+              <HeaderStat label="Activity" term="unusual" title={`Volume ${flow.volumeVsExpected.toFixed(1)}× expected`}>
                 <SpikeBadge level={flow.spikeLevel} />
                 <span className="tnum text-slate-300">{flow.spikeScore}</span>
               </HeaderStat>
               <HeaderStat label="Mkt cap" term="marketCap">
                 <span className={cn('tnum', marketCapOf(flow) === null ? 'text-slate-600' : 'text-slate-200')}>
                   {formatMarketCap(marketCapOf(flow))}
-                </span>
-              </HeaderStat>
-              <HeaderStat label="IV30 · rank" term="ivRank">
-                <span className="tnum text-slate-200">{flow.iv30 !== null ? flow.iv30.toFixed(1) : '—'}</span>
-                <span className={cn('tnum', (flow.ivRank ?? 0) >= 75 ? 'text-caution' : 'text-slate-500')}>
-                  {flow.ivRank !== null ? `· ${flow.ivRank}` : ''}
                 </span>
               </HeaderStat>
               <HeaderStat
@@ -929,13 +914,14 @@ function TickerBody({ data, defs, sections }: { data: DetailResponse; defs: Sect
   const { flow, history } = data;
   // 5-minute figures need two snapshots at least a minute apart; until then they are unmeasured, not zero.
   const measured = flow.flowWindowMs !== null;
-  const headlines = sectionHeadlines({
+  const summary: SummaryInput = {
     flow,
     projection: data.projection,
     calibration: data.calibration,
     trackRecord: data.trackRecord,
     historyCount: history.length,
-  });
+  };
+  const headlines = sectionHeadlines(summary);
   const content: Record<SectionId, ReactNode> = {
     projection: (
       <ProjectionCard flow={flow} projection={data.projection} calibration={data.calibration} coverage={data.projectionCoverage} />
@@ -1016,6 +1002,7 @@ function TickerBody({ data, defs, sections }: { data: DetailResponse; defs: Sect
 
   return (
     <div className="space-y-2">
+      <AtAGlance input={summary} titleOf={(id) => defs.find((d) => d.id === id)?.title ?? null} onOpen={sections.reveal} />
       {defs.map((d) => (
         <CollapsibleSection
           key={d.id}
