@@ -772,6 +772,21 @@ lone and sector-wide spikes are graded apart (all times of day together,
 single names only, shrunk from a coin flip, 20 graded before anything shows).
 The cutoff was fixed before any result existed. ETFs have no breadth.
 
+**Who leads whom.** The Cohorts page ranks, per cohort, the names whose
+option positioning has shifted before the group moved: the rank correlation
+between the day's change in a name's 25-delta risk-reversal skew and the
+cohort benchmark's NEXT-session return in excess of SPY. A cohort has dozens
+of names, so some correlate by luck: a name needs 40 sessions to be tested, is
+listed only past |t| 2.6, and the card states how many names were tested and
+how many would clear that bar by chance — and says so in words when the list
+is no longer than that. Computed on demand per cohort and cached until the
+next finalized session. **Exploratory by design:** it is daily, delayed and
+one session ahead, so it ranks candidates and feeds nothing into the learned
+lean.
+
+**If reversed:** an alert cannot tell a stock-specific spike from a
+sector-wide one, and nothing shows which names' flow tends to move first.
+
 ---
 
 ## 6. Cross-cutting invariants (the short list a reviewer should protect)

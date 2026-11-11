@@ -76,6 +76,13 @@ export const GLOSSARY = {
     read: '"~1 week" = strongest early and fading; "~4 weeks" = slow to build; "1–4 weeks" = an edge with no window standing out; "no edge yet" = nothing to time.',
     caveat: 'Descriptive only. The learned lean on the scanner always uses the 10-session window, which is the one the site grades itself on.',
   },
+  sectorLeader: {
+    term: 'Who leads whom',
+    what: "Whether a name's option positioning has tended to shift a session before its group moved against the market.",
+    how: "Rank correlation between the day's change in the name's 25-delta risk-reversal skew and its group benchmark's return over the next session, in excess of SPY. A name needs 40 sessions to be tested and is listed only past |t| 2.6.",
+    read: 'Positive = its positioning turning bullish has come before the group outperforming. The footer says how many names would clear the bar by luck; compare the list against that.',
+    caveat: 'Many names are tested at once, the data is daily and delayed, and a correlation is not a cause. Candidates to watch, not signals.',
+  },
   spikeBreadth: {
     term: 'Lone or sector-wide spike',
     what: "Whether a spike alert is one stock on its own or its sector lighting up at once.",
