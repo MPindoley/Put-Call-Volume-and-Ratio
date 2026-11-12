@@ -215,6 +215,41 @@ export const GLOSSARY = {
     read: 'The pre-event reference is the more reliable of the two.',
   },
 
+  // ── Peer groups page ──
+  secCohorts: {
+    term: 'Peer groups',
+    what: 'The groups each stock is compared against, and whether each group is behaving like its usual self.',
+    how: 'Every stock belongs to one group, keyed by a benchmark ETF: its sector fund, or an industry fund for some (semiconductors, biotech).',
+    read: 'A stock’s “versus its sector” readings only mean something if its group is stable. A steady member count and spread mean a stock’s gap moved because the stock moved; a shifting count or spread means the group itself changed.',
+  },
+  secLeaders: {
+    term: 'Who leads whom',
+    what: 'Stocks whose option positioning has tended to shift a session before their whole group moved against the market.',
+    read: 'A listed name is a candidate bellwether: worth a look when its positioning turns. The note under the table says how many names would clear the bar by chance alone.',
+    caveat: 'Exploratory — a correlation is not a mechanism, and it does not feed the learned lean.',
+  },
+  cohortMembers: {
+    term: 'Members',
+    what: 'Stocks in the group with usable data in the latest capture.',
+    read: 'Should be steady day to day. A jump means names joined or dropped out, which shifts the group’s median.',
+  },
+  cohortIqr: {
+    term: 'IV spread (IQR)',
+    what: 'How far apart the members’ implied volatilities are: the gap between the 25th and 75th percentile, in vol points.',
+    read: 'A wider spread means the group is less uniform, so comparing any one stock with its median is less precise.',
+  },
+  dispersionProxy: {
+    term: 'Dispersion proxy',
+    what: 'The benchmark ETF’s implied volatility divided by the average of its members’.',
+    read: 'Low means the members are expected to move independently (stock-picking conditions); high means they are expected to move together (macro-driven).',
+    caveat: 'A proxy, not a true implied correlation.',
+  },
+  dispersionPct: {
+    term: '90-day percentile',
+    what: 'Where today’s dispersion proxy sits in the group’s last 90 sessions.',
+    read: 'Above 70 (red): members unusually tied together. Below 30 (green): unusually independent. Until 20 sessions are on record it shows how many have been collected.',
+  },
+
   // ── Flow ──
   putCallRatio: {
     term: 'Put/Call ratio',

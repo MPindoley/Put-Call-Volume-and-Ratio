@@ -44,6 +44,15 @@ const signed = (x: number, digits: number): string => `${x >= 0 ? '+' : '−'}${
 export const PUT_HEAVY = 1.1;
 export const CALL_HEAVY = 0.6;
 
+/**
+ * "1.4× usual volume" — or null when the pace is not measured yet or rounds to
+ * nothing (no volume since a restart, a closed market): "0.0×" would read as a
+ * finding when it is only an absence.
+ */
+export function paceText(volumeVsExpected: number): string | null {
+  return Number.isFinite(volumeVsExpected) && volumeVsExpected >= 0.05 ? `${volumeVsExpected.toFixed(1)}×` : null;
+}
+
 export type FlowLean = 'call-heavy' | 'put-heavy' | 'balanced';
 
 export function flowLean(putCallRatio: number): FlowLean | null {
@@ -145,8 +154,8 @@ function projectionHeadline({ flow, projection }: SummaryInput): string {
 
 function overviewHeadline({ flow }: SummaryInput): string {
   const parts = [`P/C ${Number.isFinite(flow.putCallRatio) ? flow.putCallRatio.toFixed(2) : '—'}`];
-  // Zero means "not measured yet" (no volume seen since the last restart), not "no volume".
-  if (flow.volumeVsExpected > 0) parts.push(`${flow.volumeVsExpected.toFixed(1)}× usual volume`);
+  const pace = paceText(flow.volumeVsExpected);
+  if (pace) parts.push(`${pace} usual volume`);
   if (flow.flowWindowMs !== null && flow.netFlow !== 0) {
     parts.push(`net ${formatCompact(Math.abs(flow.netFlow))} ${flow.netFlow > 0 ? 'calls' : 'puts'} per 5 min`);
   }
@@ -271,7 +280,8 @@ function flowTile({ flow }: SummaryInput): GlanceTile {
   const busy = flow.spikeLevel !== 'normal';
   const detail: string[] = [];
   if (lean !== null) detail.push(`P/C ${flow.putCallRatio.toFixed(2)}`);
-  if (flow.volumeVsExpected > 0) detail.push(`${flow.volumeVsExpected.toFixed(1)}× usual volume`);
+  const pace = paceText(flow.volumeVsExpected);
+  if (pace) detail.push(`${pace} usual volume`);
   if (busy) detail.push(`${flow.spikeLevel} activity`);
   // An inverse product's calls are bets against what it tracks, so green/red would point the wrong way.
   const tone: Tone =
@@ -462,10 +472,9 @@ export function glanceSentence(input: SummaryInput): string {
   const { flow, projection } = input;
   const out: string[] = [];
   const lean = flowLean(flow.putCallRatio);
+  const pace = paceText(flow.volumeVsExpected);
   if (lean) {
-    out.push(
-      `Options flow is ${lean}${flow.volumeVsExpected > 0 ? ` on ${flow.volumeVsExpected.toFixed(1)}× its usual volume` : ''}.`,
-    );
+    out.push(`Options flow is ${lean}${pace ? ` on ${pace} its usual volume` : ''}.`);
   }
   const c = flow.conviction;
   out.push(c?.direction ? `The learned lean is ${c.direction} (${points(c.score)} pts).` : 'No learned lean today.');

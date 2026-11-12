@@ -7,6 +7,7 @@ import {
   flowLean,
   glanceSentence,
   glanceTiles,
+  paceText,
   range68,
   sectionHeadlines,
   sectionList,
@@ -126,6 +127,18 @@ describe('flowLean', () => {
   it('is unknown when there is no ratio', () => {
     expect(flowLean(Number.NaN)).toBeNull();
     expect(flowLean(0)).toBeNull();
+  });
+});
+
+describe('paceText', () => {
+  it('prints the pace against usual volume', () => {
+    expect(paceText(1.44)).toBe('1.4×');
+    expect(paceText(49.36)).toBe('49.4×');
+  });
+  it('says nothing when the pace is unmeasured or rounds to zero', () => {
+    expect(paceText(0)).toBeNull();
+    expect(paceText(0.03)).toBeNull();
+    expect(paceText(Number.NaN)).toBeNull();
   });
 });
 
@@ -494,5 +507,14 @@ describe('sectionList', () => {
       'relationships',
       'history',
     ]);
+  });
+});
+
+describe('a closed or just-restarted market', () => {
+  it('never prints a pace of 0.0×', () => {
+    const input = inputOf({ flow: flowOf({ volumeVsExpected: 0.03 }) });
+    expect(sectionHeadlines(input).overview).toBe('P/C 0.40 · net 600 calls per 5 min');
+    expect(glanceTiles(input)[0]!.detail).toBe('P/C 0.40');
+    expect(glanceSentence(input)).toBe('Options flow is call-heavy. No learned lean today.');
   });
 });

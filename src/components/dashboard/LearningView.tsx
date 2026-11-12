@@ -142,7 +142,7 @@ export function LearningView(): JSX.Element {
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-2 p-4 lg:p-6">
+    <div className="mx-auto max-w-7xl space-y-2 p-4 lg:p-6">
       <div className="pb-1">
         <PageHeader
           title="What the app has learned"

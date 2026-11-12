@@ -1,16 +1,19 @@
 'use client';
 
 /**
- * Cohort median-health page. One row per peer cohort (benchmark ETF), showing
- * the IV-dispersion proxy, its 90-day percentile, member count and member-IV
- * IQR, plus the composition version. The count + IQR are the health signals:
- * they let you tell whether a name's relative spread moved because the NAME
- * moved or because its COHORT shifted composition/dispersion.
+ * Peer-group (cohort) health page. One row per peer cohort (benchmark ETF),
+ * showing member count, member-IV IQR, the IV-dispersion proxy and its 90-day
+ * percentile; weighting and composition version are audit columns shown on
+ * request. The count + IQR are the health signals: they tell whether a name's
+ * relative spread moved because the NAME moved or because its COHORT shifted
+ * composition/dispersion. Below it, who leads whom.
  */
 import Link from 'next/link';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardHeader } from '@/components/ui/card';
+import { CollapsibleSection, useSections } from '@/components/ui/collapsible';
+import { DetailToggle, useDetail } from '@/components/ui/more-detail';
 import { Term } from '@/components/ui/term';
 import type { LeadersReport } from '@/lib/sector-leader-jobs';
 import type { LeaderRow } from '@/lib/sector-leaders';
@@ -34,74 +37,129 @@ export function SectorsView(): JSX.Element {
     refetchInterval: 60_000,
   });
 
-  return (
-    <div className="mx-auto max-w-6xl p-4 lg:p-6">
-      <PageHeader
-        title="Cohort health"
-        description={
-          <>
-            Each peer cohort is keyed by its benchmark ETF. Names overridden to an industry ETF (semis → SMH, biotech → XBI)
-            belong to that cohort only and leave their GICS sector median — one name, one peer group. The{' '}
-            <strong className="text-slate-300">IV dispersion proxy</strong> is benchmark IV ÷ weighted-average member IV (a proxy,
-            not implied correlation). Member <strong className="text-slate-300">count</strong> and member-IV{' '}
-            <strong className="text-slate-300">IQR</strong> are the health signals: a moving spread with a stable cohort means the
-            name moved; a shifting count/IQR means the cohort itself changed.
-          </>
-        }
-      />
+  const sections = useSections('sectors.sections', DEFAULT_OPEN);
+  const [audit, toggleAudit] = useDetail('cohort-audit');
+  const rows = query.data ?? [];
+  const ranked = rows.filter((d) => d.pct90 !== null);
+  const stretched = ranked.filter((d) => d.pct90! >= 70 || d.pct90! <= 30).length;
+  const cohortsHeadline = query.isLoading
+    ? 'Loading…'
+    : rows.length === 0
+      ? 'Fills in after the first end-of-day capture'
+      : ranked.length === 0
+        ? `${rows.length} peer groups · the 90-day comparison is still building`
+        : `${rows.length} peer groups · ${stretched === 0 ? 'none' : stretched} at an unusual reading for the last 90 days`;
 
-      <Card className="mt-4">
-        <CardHeader title="Cohorts" />
+  return (
+    <div className="mx-auto max-w-7xl space-y-2 p-4 lg:p-6">
+      <div className="pb-1">
+        <PageHeader
+          title="Cohorts — each stock's peer group"
+          description={
+            <>
+              Every stock is compared against one group of peers: its sector, or its industry for some (semiconductors, biotech).
+              This page shows whether each group is behaving like its usual self — which is what makes a stock&apos;s
+              &ldquo;versus its sector&rdquo; readings trustworthy — and which names have tended to move before their group.
+            </>
+          }
+        />
+      </div>
+
+      <CollapsibleSection
+        id="cohorts"
+        title="Peer groups"
+        help="secCohorts"
+        summary={cohortsHeadline}
+        open={sections.isOpen('cohorts')}
+        onToggle={() => sections.toggle('cohorts')}
+      >
         {query.isLoading ? (
           <div className="space-y-2 p-3">
             {Array.from({ length: 8 }, (_, i) => (
               <Skeleton key={i} className="h-8 w-full" />
             ))}
           </div>
-        ) : !query.data || query.data.length === 0 ? (
+        ) : rows.length === 0 ? (
           <p className="py-8 text-center text-xs text-slate-500">
-            No finalized cohort data yet — cohorts populate after the first pinned end-of-day capture.
+            No finalized group data yet — groups populate after the first pinned end-of-day capture.
           </p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-xs">
-              <thead className="text-left text-[10px] uppercase tracking-wider text-slate-500">
-                <tr>
-                  <th className="px-3 py-2">Cohort</th>
-                  <th className="px-3 py-2 text-right">Members</th>
-                  <th className="px-3 py-2 text-right">IV IQR</th>
-                  <th className="px-3 py-2 text-right">Dispersion proxy</th>
-                  <th className="px-3 py-2 text-right">90d pctile</th>
-                  <th className="px-3 py-2 text-right">Weighting</th>
-                  <th className="px-3 py-2 text-right">Days</th>
-                  <th className="px-3 py-2 text-right">Comp. ver.</th>
-                </tr>
-              </thead>
-              <tbody>
-                {query.data.map((d) => (
-                  <tr key={d.cohort} className="border-t border-surface-border/50 text-slate-300">
-                    <td className="px-3 py-2 font-medium text-slate-100">{d.label}</td>
-                    <td className="px-3 py-2 text-right tnum">{d.constituentCount}</td>
-                    <td className="px-3 py-2 text-right tnum">{d.medianIqr ?? '—'}</td>
-                    <td className="px-3 py-2 text-right tnum">{d.proxy !== null ? d.proxy.toFixed(3) : '—'}</td>
-                    <td className={cn('px-3 py-2 text-right tnum', pctClass(d.pct90))}>
-                      {d.pct90 !== null ? `${d.pct90}%` : `${d.sampleDays}/20`}
-                    </td>
-                    <td className="px-3 py-2 text-right text-slate-400">{d.weightMethod ?? '—'}</td>
-                    <td className="px-3 py-2 text-right tnum text-slate-500">{d.sampleDays}</td>
-                    <td className="px-3 py-2 text-right font-mono text-[10px] text-slate-600">{d.compositionVersion}</td>
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[560px] text-xs">
+                <thead className="text-left text-[10px] uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Group</th>
+                    <th className="px-3 py-2 text-right">
+                      <Term k="cohortMembers">Members</Term>
+                    </th>
+                    <th className="px-3 py-2 text-right">
+                      <Term k="cohortIqr">IV spread</Term>
+                    </th>
+                    <th className="px-3 py-2 text-right">
+                      <Term k="dispersionProxy">Dispersion proxy</Term>
+                    </th>
+                    <th className="px-3 py-2 text-right">
+                      <Term k="dispersionPct">90-day percentile</Term>
+                    </th>
+                    {audit && (
+                      <>
+                        <th className="px-3 py-2 text-right">Weighting</th>
+                        <th className="px-3 py-2 text-right">Days</th>
+                        <th className="px-3 py-2 text-right">Membership version</th>
+                      </>
+                    )}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {rows.map((d) => (
+                    <tr key={d.cohort} className="border-t border-surface-border/50 text-slate-300">
+                      <td className="px-3 py-2 font-medium text-slate-100">{d.label}</td>
+                      <td className="px-3 py-2 text-right tnum">{d.constituentCount}</td>
+                      <td className="px-3 py-2 text-right tnum">{d.medianIqr ?? '—'}</td>
+                      <td className="px-3 py-2 text-right tnum">{d.proxy !== null ? d.proxy.toFixed(3) : '—'}</td>
+                      <td className={cn('px-3 py-2 text-right tnum', pctClass(d.pct90))}>
+                        {d.pct90 !== null ? `${d.pct90}%` : `${d.sampleDays}/20 days`}
+                      </td>
+                      {audit && (
+                        <>
+                          <td className="px-3 py-2 text-right text-slate-400">{d.weightMethod ?? '—'}</td>
+                          <td className="px-3 py-2 text-right tnum text-slate-500">{d.sampleDays}</td>
+                          <td className="px-3 py-2 text-right font-mono text-[10px] text-slate-600">{d.compositionVersion}</td>
+                        </>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="border-t border-surface-border px-3 py-2">
+              <DetailToggle open={audit} onToggle={toggleAudit} label="the audit columns (weighting, days on record, membership version)" />
+            </div>
+          </>
         )}
-      </Card>
+      </CollapsibleSection>
 
-      <LeadersCard />
+      <CollapsibleSection
+        id="leaders"
+        title="Who leads whom"
+        help="secLeaders"
+        summary="Names whose positioning has tended to shift a session before their group moved"
+        open={sections.isOpen('leaders')}
+        onToggle={() => sections.toggle('leaders')}
+      >
+        <LeadersCard />
+      </CollapsibleSection>
+      <p className="pt-1 text-[10px] text-slate-500">
+        Underlined terms and the ? beside each section explain themselves — hover, tab to them, or tap for what it is, how it is worked
+        out and how to read it.
+      </p>
     </div>
   );
 }
+
+/** A short page: both sections start open; closing one is remembered like everywhere else. */
+const DEFAULT_OPEN = ['cohorts', 'leaders'] as const;
 
 /**
  * Who leads whom (sector-leaders.ts): names whose option positioning has
@@ -156,7 +214,7 @@ function LeadersCard(): JSX.Element {
     </div>
   );
   return (
-    <Card className="mt-4">
+    <Card>
       <CardHeader
         title="Who leads whom"
         right={
