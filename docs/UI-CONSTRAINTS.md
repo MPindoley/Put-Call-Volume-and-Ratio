@@ -65,11 +65,14 @@ the two named gaps have been implemented to match.
 ## Navigation & deep links
 
 6. Every ticker is a **deep link**: `/ticker/{SYMBOL}` renders that name's detail
-   (volatility & positioning, sector-relative, track record, event gauge,
-   idiosyncratic feed, stored history). Ticker cells in the scan table and in
-   panels link to it. The ticker page has a sticky header — breadcrumb
-   (Scanner › sector › symbol; the sector filters the scanner), live price,
-   learned lean, P/C, unusual activity, IV — and a section jump bar.
+   (projection, flow, volatility & positioning, versus its sector, track
+   record, event move, unusual moves, time of day, relationships, stored
+   snapshots), and `/ticker/{SYMBOL}#track-record` opens that section on
+   arrival. Symbols in the scan table and in panels link to it. The ticker page
+   has a sticky header — breadcrumb (Scanner › sector › symbol; the sector
+   filters the scanner), live price, activity, market cap, data age — and a bar
+   that opens any section (open ones are lit) or opens and closes them all.
+   The reading of the stock is the glance block under it (see below).
 7. The scanner's side panel is **tabbed** (Market / Alerts / Regime / Leaders /
    Accuracy), collapsible, and remembers its tab and open state per browser.
    Market holds the detail behind the one-row market strip (intraday ratio vs
@@ -84,6 +87,52 @@ the two named gaps have been implemented to match.
    toasts and shortcuts, and links navigate client-side so the live stream
    survives page changes. No page carries its own back-link.
 
+## Reading a page at a glance (stock, Learning, Cohorts)
+
+The detail pages had grown to three or four screens of cards. They are built so
+the answer is on the first screen and every detail is one click away.
+
+1. **Glance block first.** A few plain sentences, then six tiles — answer first
+   ("Call-heavy", "Expensive for it"), the numbers behind it second
+   (`ui/glance.tsx`). The wording is pure and unit-tested
+   (`lib/ticker-summary.ts`, `lib/learning-summary.ts`): a missing input reads
+   "No data yet" and offers nothing to open, never a number; a pace that rounds
+   to 0.0× is omitted, not printed. The sentence always covers the flow and the
+   learned lean, then only what is outside the stock's own normal.
+   Six tiles, because two, three or six to a row leaves no empty cell.
+2. **Every card is a drop-down section** (`ui/collapsible.tsx`). The bar shows
+   the title in a fixed column and the section's headline beside it, open or
+   closed, so the closed page reads like a table. Sections start closed (the
+   short Cohorts page starts open); what is open is remembered per browser
+   (`ticker.sections`, `learning.sections`, `sectors.sections`) — per page, not
+   per stock, so the layout you leave is the layout the next stock opens with.
+   A card rendered directly inside a section drops its own frame and title
+   (`EmbeddedContext`); `Standalone` restores them for cards shown side by side.
+3. **Answer first, detail on request** (`ui/more-detail.tsx`). An open section
+   leads with its reading; dense tables (odds by level, level-by-level
+   estimates, individual analogs, audit columns) sit behind a remembered
+   "Show …" control. Nothing is removed.
+4. **Everything explains itself.** A dotted underline or the "?" beside a
+   section title opens a definition from `lib/glossary.ts`: what it is, how it
+   is worked out, how to read it, where it can mislead. The "?" explains and
+   the rest of the bar toggles; a tile's label explains and the rest of the
+   tile opens its section. One glossary, so a definition never drifts between
+   pages. New numbers get a glossary entry, not a `title=` tooltip.
+5. **Links open what they point at.** An in-page link (`#track-record`), a tile,
+   the header's section names and a link arriving from another page all open
+   the section, not just scroll to its closed bar.
+
+## Quick look (scanner)
+
+Clicking a scanner row — anywhere but the symbol link or the pin, which keep
+their own jobs — puts that stock's glance block and section headlines in the
+side column (`dashboard/QuickLook.tsx`); on a narrow screen it is a full-screen
+sheet. `↑`/`↓` walk the visible rows, `Esc` closes. It reads the same payload as
+the stock page (`hooks/useTickerDetail.ts`), so the page and the quick look
+cannot disagree and opening the page afterwards starts from loaded data.
+Alerts are two lines each (who, how big, which way, when; then breadth and
+follow-through) with the rest behind an arrow; clicking one opens its quick look.
+
 ## Keyboard shortcuts
 
 A global handler (mounted once in the app shell, so it works on every page) provides:
@@ -91,9 +140,9 @@ A global handler (mounted once in the app shell, so it works on every page) prov
 | Key | Action |
 |-----|--------|
 | `/` | focus the ticker search box |
-| `↑` / `↓` | move through search matches |
+| `↑` / `↓` | move through search matches; with a quick look open, through the scanner rows |
 | `Enter` | open the highlighted ticker |
-| `Esc` | clear + blur the search box |
+| `Esc` | clear + blur the search box; close the quick look |
 | `?` | toggle the keyboard-shortcuts help overlay (also the footer's "Shortcuts") |
 
 Shortcuts are suppressed while typing in an input/textarea (except `Esc`).

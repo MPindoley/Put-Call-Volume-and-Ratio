@@ -10,6 +10,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { IntradayResponse } from '@/app/api/flow/[symbol]/intraday/route';
 import { Card, CardHeader } from '@/components/ui/card';
+import { Standalone } from '@/components/ui/collapsible';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Term } from '@/components/ui/term';
 import type { ClockBucket, ClockReport } from '@/lib/intraday-jobs';
@@ -68,15 +69,16 @@ export function IntradayCards({ symbol }: { symbol: string }): JSX.Element {
       </Card>
     );
   }
+  // Two cards side by side: each keeps its own frame and title inside the page's drop-down section.
   return (
-    <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-12">
+    <Standalone className="grid grid-cols-1 items-start gap-3 p-3 xl:grid-cols-12">
       <div className="min-w-0 xl:col-span-7">
         <ClockCard r={q.data.clock} />
       </div>
       <div className="min-w-0 xl:col-span-5">
         <SpikeCard r={q.data.spikes} />
       </div>
-    </div>
+    </Standalone>
   );
 }
 

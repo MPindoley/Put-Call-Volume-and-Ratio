@@ -12,7 +12,7 @@
  * them yourself (remembered per browser).
  */
 import Link from 'next/link';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { SpikeBadge } from '@/components/ui/badge';
 import { ConvictionCell, QUOTE_STALE_MS } from '@/components/ui/conviction';
@@ -421,16 +421,27 @@ function Row({
   pinned,
   flash,
   columns,
+  selected,
+  onSelect,
 }: {
   row: TickerFlow;
   pinned: boolean;
   flash: 'bullish' | 'bearish' | null;
   columns: readonly ColumnId[];
+  selected: boolean;
+  onSelect: (symbol: string) => void;
 }): JSX.Element {
   return (
     <div
+      // The symbol link and the pin keep their own jobs; anywhere else on the row opens the quick look.
+      onClick={(e) => {
+        if (!(e.target as HTMLElement).closest('a, button')) onSelect(row.symbol);
+      }}
+      title="Click for a quick look · click the symbol for the full page"
+      aria-current={selected ? 'true' : undefined}
       className={cn(
-        'flex items-center gap-2 border-b border-surface-border/50 px-3 text-xs hover:bg-surface-overlay/50',
+        'flex cursor-pointer items-center gap-2 border-b border-surface-border/50 px-3 text-xs hover:bg-surface-overlay/50',
+        selected && 'bg-blue-500/10 shadow-[inset_2px_0_0_0_#3b82f6] hover:bg-blue-500/15',
         flash === 'bullish' && 'animate-flash-green',
         flash === 'bearish' && 'animate-flash-red',
       )}
@@ -561,6 +572,10 @@ export function FlowTable({
   const setSort = useFlowStore((s) => s.setSort);
   const pinned = useFlowStore((s) => s.pinned);
   const flashes = useFlowStore((s) => s.flashes);
+  const selected = useFlowStore((s) => s.selected);
+  const setSelected = useFlowStore((s) => s.setSelected);
+  // Clicking the selected row again closes the quick look.
+  const onSelect = useCallback((symbol: string) => setSelected(useFlowStore.getState().selected === symbol ? null : symbol), [setSelected]);
 
   const [hidden, setHidden] = usePersistentState<ColumnId[]>('flow-table-hidden-columns', [], isColumnIdArray);
   const [width, setWidth] = useState<number>(Number.POSITIVE_INFINITY);
@@ -589,6 +604,31 @@ export function FlowTable({
     estimateSize: () => ROW_HEIGHT,
     overscan: 12,
   });
+
+  // With a quick look open, ↑/↓ walk the visible rows and Esc closes it (never while typing in a field).
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  useEffect(() => {
+    if (selected === null) return;
+    const onKey = (e: KeyboardEvent): void => {
+      const el = e.target as HTMLElement | null;
+      if (el?.tagName === 'INPUT' || el?.tagName === 'TEXTAREA' || el?.tagName === 'SELECT' || el?.isContentEditable) return;
+      if (e.key === 'Escape') {
+        setSelected(null);
+        return;
+      }
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const list = rowsRef.current;
+      const at = list.findIndex((r) => r.symbol === selected);
+      const next = list[Math.min(list.length - 1, Math.max(0, (at === -1 ? 0 : at) + (e.key === 'ArrowDown' ? 1 : -1)))];
+      if (!next) return;
+      e.preventDefault();
+      setSelected(next.symbol);
+      virtualizer.scrollToIndex(list.indexOf(next), { align: 'auto' });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected, setSelected, virtualizer]);
 
   const now = Date.now();
   const pinSet = new Set(pinned);
@@ -732,7 +772,14 @@ export function FlowTable({
                     key={row.symbol}
                     style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${v.start}px)` }}
                   >
-                    <MemoRow row={row} pinned={pinSet.has(row.symbol)} flash={flash} columns={columns} />
+                    <MemoRow
+                      row={row}
+                      pinned={pinSet.has(row.symbol)}
+                      flash={flash}
+                      columns={columns}
+                      selected={row.symbol === selected}
+                      onSelect={onSelect}
+                    />
                   </div>
                 );
               })}

@@ -3,7 +3,9 @@
 /**
  * Scanner page. Table-first: a one-row market strip, then the scan table
  * filling the rest of the screen beside a collapsible side panel (Market /
- * Alerts / Regime / Leaders / Accuracy). Socket, snapshot, toasts and
+ * Alerts / Regime / Leaders / Accuracy). Clicking a row or an alert puts that
+ * stock's quick look in the side column — a full-screen sheet on a narrow
+ * screen — until it is closed. Socket, snapshot, toasts and
  * shortcuts are owned by the app shell. Each region sits in an error
  * boundary so one failing panel never takes down the screen.
  */
@@ -13,11 +15,14 @@ import { cn } from '@/lib/utils';
 import { useFlowStore } from '@/store/flowStore';
 import { FlowTable } from './FlowTable';
 import { MarketStrip } from './MarketStrip';
+import { QuickLook } from './QuickLook';
 import { RightPanel } from './RightPanel';
 
 export function Dashboard(): JSX.Element {
   const isLoading = useFlowStore((s) => s.status === null);
   const [panelOpen, setPanelOpen] = usePersistentState('flow-ui-side-panel-open', true);
+  const selected = useFlowStore((s) => s.selected);
+  const setSelected = useFlowStore((s) => s.setSelected);
 
   return (
     <div className="flex flex-col gap-3 p-3 xl:h-full">
@@ -25,18 +30,28 @@ export function Dashboard(): JSX.Element {
         <MarketStrip />
       </PanelBoundary>
 
-      <div className={cn('grid grid-cols-1 gap-3 xl:min-h-0 xl:flex-1', panelOpen && 'xl:grid-cols-[minmax(0,1fr)_340px]')}>
+      <div
+        className={cn('grid grid-cols-1 gap-3 xl:min-h-0 xl:flex-1', (panelOpen || selected !== null) && 'xl:grid-cols-[minmax(0,1fr)_340px]')}
+      >
         <div className="h-[75vh] min-h-[420px] min-w-0 xl:h-auto xl:min-h-0">
           <PanelBoundary name="flow table">
             <FlowTable isLoading={isLoading} panelOpen={panelOpen} onTogglePanel={() => setPanelOpen((v) => !v)} />
           </PanelBoundary>
         </div>
-        {panelOpen && (
-          <div className="h-[640px] min-w-0 xl:h-auto xl:min-h-0">
-            <PanelBoundary name="side">
-              <RightPanel />
+        {selected !== null ? (
+          <div className="fixed inset-x-0 bottom-0 top-12 z-40 min-w-0 bg-surface p-3 xl:static xl:z-auto xl:min-h-0 xl:bg-transparent xl:p-0">
+            <PanelBoundary name="quick look">
+              <QuickLook symbol={selected} onClose={() => setSelected(null)} />
             </PanelBoundary>
           </div>
+        ) : (
+          panelOpen && (
+            <div className="h-[640px] min-w-0 xl:h-auto xl:min-h-0">
+              <PanelBoundary name="side">
+                <RightPanel />
+              </PanelBoundary>
+            </div>
+          )
         )}
       </div>
     </div>

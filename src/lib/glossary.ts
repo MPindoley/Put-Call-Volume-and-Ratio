@@ -18,6 +18,238 @@ export interface GlossaryEntry {
 }
 
 export const GLOSSARY = {
+  // ── At a glance (the six tiles at the top of a stock page) ──
+  glanceFlow: {
+    term: 'Flow now',
+    what: 'Which side of the options market is busier right now, and how busy it is against this stock’s own normal for this time of day.',
+    how: 'Put/call ratio of the volume in the latest window: 1.1 or more reads put-heavy, 0.6 or less call-heavy, in between balanced (single stocks usually run 0.5–0.8). Volume is today’s so far ÷ what is usual by now.',
+    read: 'A lean that arrives on 2–3× usual volume matters far more than one on a quiet day. Treat it as a prompt to look closer, then check the track record for whether such flow has meant anything for this stock.',
+    caveat: 'Volume counts every trade — buying and selling, opening and closing — so put-heavy is not automatically bearish.',
+  },
+  glancePositioning: {
+    term: 'Positioning',
+    what: 'Whether the contracts people are holding (open interest) lean more to puts or to calls than is normal for this particular stock.',
+    how: 'Today’s open-interest put/call ratio against the stock’s own usual range: the 5th to 95th percentile of its last 120 sessions.',
+    read: '“Normal for it” means nothing unusual, whatever the level. “Unusually put-heavy” or “call-heavy” means outside its own range. It moves more slowly than volume, so it says more about positions held than about today’s trading.',
+    caveat: 'Needs about two months of captured sessions before a range exists.',
+  },
+  glancePricing: {
+    term: 'Option prices',
+    what: 'How expensive this stock’s options are compared with its own past year.',
+    how: 'IV rank: where today’s 30-day implied volatility sits among its stored daily values, 0 (cheapest) to 100 (dearest). 75 or more reads expensive, 25 or less cheap.',
+    read: 'Expensive options mean the market expects bigger moves than usual, often ahead of earnings or news. Compare with realized volatility: implied well above realized means traders are paying up for protection or a catalyst.',
+    caveat: 'The rank needs 20+ stored sessions and matures toward a full year.',
+  },
+  glanceMove: {
+    term: 'Expected move',
+    what: 'How far option prices say the stock is likely to move by the expiry about a week out.',
+    how: 'Half the width of the 68% range — the 16th to 84th percentile of the price distribution that expiry’s options imply — as a percentage of today’s price.',
+    read: 'About two times in three the stock should finish inside the range shown. It is a size, not a direction. “Real moves have run 0.8× priced” means this stock has historically moved less than its options priced.',
+    caveat: 'Market-implied, not a forecast: it includes what traders pay for protection, so it usually overstates real moves a little.',
+  },
+  glanceLean: {
+    term: 'Learned lean',
+    what: 'Which way this session’s signals point for this stock, weighted by how well each signal has actually worked in the past.',
+    how: 'Each firing signal’s learned edge — points above the base rate of beating SPY over 10 sessions — signed and combined.',
+    read: '+4 means such signals have beaten SPY about 4 percentage points more often than normal. Bigger numbers, and more signals agreeing, mean more evidence. “No signal today” means nothing with a record fired.',
+    caveat: 'A statement about past frequencies, not a promise.',
+  },
+  glanceComing: {
+    term: 'Coming up',
+    what: 'The next dated catalyst the options are pricing — usually earnings — and how big a move is priced for it.',
+    how: 'The date comes from the earnings calendar or, when unconfirmed (“possible”), from an expiry carrying extra implied volatility. The priced move separates the event itself from ordinary day-to-day movement.',
+    read: 'Ranges and option prices that span this date include the event. “Rich” means more is priced than the stock’s past reactions; “cheap” means less.',
+  },
+
+  // ── Learning at a glance (the six tiles at the top of the Learning page) ──
+  learnSelfGrade: {
+    term: 'Is it working? (self-grade)',
+    what: 'The app’s own report card: when it showed a lean on a stock, how much more often than normal did the stock then go that way?',
+    how: 'Every lean shown is logged and graded 10 sessions later against SPY. “Delivered” is the hit rate minus the ordinary-day rate for the same stocks; “claimed” is what the leans predicted on average.',
+    read: 'Delivered above zero means its leans carried real information. Delivered close to claimed means it is well calibrated; far below means it has been overconfident.',
+    caveat: 'Needs a few weeks of graded calls before the number means much.',
+  },
+  learnGraded: {
+    term: 'Signals graded',
+    what: 'How many signals have completed their 10-session window and been scored — the evidence everything learned rests on.',
+    how: 'A signal is logged when it fires and graded 10 trading sessions later: did the stock beat SPY in the direction it pointed?',
+    read: 'More graded signals means firmer estimates. “Logged” also counts the ones still waiting.',
+  },
+  learnPending: {
+    term: 'Awaiting grades',
+    what: 'Signals that have fired but whose 10-session window has not closed yet.',
+    read: 'These become evidence as their windows close; “next due” is the session the next one can be graded.',
+  },
+  learnEstablished: {
+    term: 'Established estimates',
+    what: 'How many of the learned estimates now rest mostly on their own evidence instead of borrowing from a broader level.',
+    how: 'Estimates are kept per signal, per market regime, per sector and per stock. Each starts from the level above and moves only as far as its own graded signals earn; “established” means it has earned at least half its weight.',
+    read: 'Signal-level estimates establish first. Stock-level ones need roughly 80 graded signals each, so that count grows slowly.',
+  },
+  learnCaptured: {
+    term: 'Sessions captured',
+    what: 'Trading days on which the app pinned a full end-of-day reading of the options data.',
+    read: 'Everything learned is built from these. Days before the first capture have prices only (backfilled), which is enough to grade signals but not to create them.',
+  },
+  learnSnapshots: {
+    term: 'Nightly snapshots',
+    what: 'Saved copies of everything learned, one per session, so past leans can be graded against what was known at the time.',
+    how: '“Live” snapshots were saved on the night; “rebuilt” ones were reconstructed afterwards from the same data, using only what was known by then.',
+    read: 'One per captured session is normal.',
+  },
+
+  // ── Sections of a stock page (the "?" beside each drop-down's title) ──
+  secProjection: {
+    term: 'Projection',
+    what: 'Where option prices put the stock at each expiry: a range it should finish inside about two times in three, and a wider one for 95%.',
+    how: 'Read from the prices of every strike at that expiry — no forecast model. A separate check compares such ranges with how far this stock has really moved.',
+    read: 'Use it for size and odds, not direction: how far could this move by a date, and what are the chances of finishing above a level? Direction comes from the signal tilt beside it.',
+    caveat: 'Options include a premium for protection, so ranges usually run a little wide; the history check shows by how much for this stock.',
+  },
+  secFlow: {
+    term: 'Flow now',
+    what: 'What is trading in this stock’s options right now: puts against calls, how much, and how that compares with its usual pace for this time of day.',
+    read: 'Look for a clear lean arriving on volume well above usual; a lean on thin volume is noise. The 30-minute line shows whether the lean is building or fading.',
+    caveat: 'Counts every trade — buyers and sellers, opening and closing — so it shows activity, not intent.',
+  },
+  secVolatility: {
+    term: 'Volatility & positioning',
+    what: 'How expensive the options are — implied volatility against the stock’s own history and its actual movement — and where the open contracts sit.',
+    read: 'A high IV rank with IV well above realized means the market is paying up for a move. Open-interest walls mark strikes that tend to act as magnets or barriers near expiry; dealer gamma says whether hedging should steady or amplify moves.',
+    caveat: 'Open interest updates once a day, so positioning is as of the last close.',
+  },
+  secRelative: {
+    term: 'Versus its sector',
+    what: 'How this stock’s skew, volatility and positioning compare with its sector peers, scored against its own usual gap to them.',
+    how: 'Each measure’s (stock − sector median) spread, as a z-score over the last 30 and 90 sessions.',
+    read: 'Near zero is normal for this stock. Beyond ±2 is a notable departure from its own pattern: it is being treated differently from its peers. Warnings flag price and positioning moving in opposite directions.',
+    caveat: 'Needs end-of-day captures to build; early readings rest on few sessions.',
+  },
+  secTrackRecord: {
+    term: 'Track record',
+    what: 'What the app has learned about this session’s signals for this stock, how each has actually performed, and the stock’s own graded history.',
+    how: 'Every signal is graded 10 sessions after it fires on whether the stock beat SPY in the direction it pointed. Estimates blend this stock’s record with its sector’s and the whole market’s, weighted by how much evidence each has.',
+    read: 'Trust larger edges that rest on many graded signals. The stock’s own raw hit rates are small samples — interesting, not decisive.',
+    caveat: 'Past frequencies, not a promise.',
+  },
+  secEvent: {
+    term: 'Event move',
+    what: 'The move option prices imply for the next dated catalyst (usually earnings), separated from ordinary day-to-day movement.',
+    read: 'Compare the priced move with how the stock has actually reacted to past events: “rich” means more is priced than it has usually delivered, “cheap” means less.',
+    caveat: 'The rich/cheap reading stays hidden until enough confirmed past events are on record.',
+  },
+  secIdiosyncratic: {
+    term: 'Unusual moves',
+    what: 'Days this stock moved sharply on its own — far more than the broad market explains.',
+    read: 'A record of when stock-specific news hit: earnings, launches, analyst calls, headlines. Useful for judging how jumpy the stock is; it is not used as a signal.',
+  },
+  secTimeOfDay: {
+    term: 'Time of day',
+    what: 'When in the session this stock’s option volume usually arrives, and what the price has done after past volume spikes at each time of day.',
+    read: 'The daily clock is what “unusual volume” is judged against: heavy trading in the first half hour is normal for most stocks. The follow-through table shows whether spikes have tended to keep going (above 50%) or fade.',
+    caveat: 'A stock with few sessions on record borrows its sector’s pattern until its own builds up.',
+  },
+  secRelationships: {
+    term: 'Relationships',
+    what: 'Which of this stock’s measurements have tended to come before its moves, and what happened after past days that looked like today.',
+    read: 'The similar-setups line is the headline: how often the stock beat SPY after comparable days, against its usual rate. Treat it as context for the learned lean, not a second opinion of equal weight.',
+    caveat: 'Exploratory. Every figure shows how much history it rests on, and early on that is not much.',
+  },
+  secHistory: {
+    term: 'Stored snapshots',
+    what: 'The raw 5-minute readings saved for this stock: put and call volume, the put/call ratio and the unusual-activity score.',
+    read: 'For checking what actually printed at a given time. Older days are thinned to save space once their patterns have been learned.',
+  },
+
+  // ── Sections of the Learning page ──
+  secLearnSignals: {
+    term: 'Signal by signal',
+    what: 'Each signal the app tracks, how often it has been right, and how much of an edge it has earned.',
+    read: 'The learned edge is the number that matters: points above an ordinary day’s rate. Confidence says how much of it rests on evidence rather than caution. “Plays out over” says how long the edge has taken to show.',
+  },
+  secLearnTogether: {
+    term: 'Signals together',
+    what: 'Whether two signals agreeing on the same stock on the same day is worth more than either alone.',
+    read: '“Stronger together” means agreement has added edge; “weaker” means it has not. A pair stays “learning” until the two have fired together often enough.',
+  },
+  secLearnSelfGrade: {
+    term: 'Is it getting better?',
+    what: 'The app grading its own calls: whenever it showed a lean, did the stock go that way more often than usual?',
+    read: 'Delivered close to claimed means its confidence is honest. A skill score above zero means the leans beat simply knowing each stock’s usual behaviour.',
+    caveat: 'It reports its failures too: at or below zero means the leans have not helped so far.',
+  },
+  secLearnTimeOfDay: {
+    term: 'Time of day',
+    what: 'What has been learned from the 5-minute data across all stocks: daily volume clocks, and what follows spike alerts.',
+    read: 'More stocks with sessions of their own means “unusual volume” is judged against each stock’s own pattern. Follow-through above 50% means spikes have tended to continue.',
+  },
+  secLearnProjection: {
+    term: 'Projection track record',
+    what: 'Whether stocks actually finished inside the ranges option prices implied.',
+    read: 'A fair 68% range holds about 68% of the time. Consistently more means options overstate moves — the usual premium for protection — which is what the history-adjusted range corrects for.',
+  },
+  secLearnCoverage: {
+    term: 'Data coverage by stock',
+    what: 'Whether every stock’s data is arriving and reaching each stage of the learning.',
+    read: '“Warming up” is normal for newer names. “Problem” means data that should be arriving is not, and is worth a look. “Check a stock” shows any one name.',
+  },
+  secLearnHealth: {
+    term: 'Data health',
+    what: 'What was deliberately left out of the learning, and why.',
+    read: 'Signals without a comparison rate, or graded against a frozen price (a halted or delisted stock), are skipped rather than guessed. Small numbers here are normal.',
+  },
+  rawRecord: {
+    term: 'Raw record',
+    what: 'How much more often than on an ordinary day the signal has been right, straight from the data with no caution applied.',
+    read: 'Compare it with the learned edge: a big raw number beside a small learned edge means the sample is still too small to trust.',
+  },
+  catalystDate: {
+    term: 'Catalyst date',
+    what: 'The date of the next event the options are pricing.',
+    how: 'A confirmed earnings date when one is on record; otherwise inferred from an expiry carrying extra implied volatility, shown in amber as unconfirmed.',
+  },
+  eventExtraction: {
+    term: 'Extraction method',
+    what: 'How the event’s share of implied volatility was separated from ordinary volatility.',
+    how: '“Pre-event ref” compares an expiry before the event with one after it; “two post-event” uses two expiries after it when none falls before.',
+    read: 'The pre-event reference is the more reliable of the two.',
+  },
+
+  // ── Peer groups page ──
+  secCohorts: {
+    term: 'Peer groups',
+    what: 'The groups each stock is compared against, and whether each group is behaving like its usual self.',
+    how: 'Every stock belongs to one group, keyed by a benchmark ETF: its sector fund, or an industry fund for some (semiconductors, biotech).',
+    read: 'A stock’s “versus its sector” readings only mean something if its group is stable. A steady member count and spread mean a stock’s gap moved because the stock moved; a shifting count or spread means the group itself changed.',
+  },
+  secLeaders: {
+    term: 'Who leads whom',
+    what: 'Stocks whose option positioning has tended to shift a session before their whole group moved against the market.',
+    read: 'A listed name is a candidate bellwether: worth a look when its positioning turns. The note under the table says how many names would clear the bar by chance alone.',
+    caveat: 'Exploratory — a correlation is not a mechanism, and it does not feed the learned lean.',
+  },
+  cohortMembers: {
+    term: 'Members',
+    what: 'Stocks in the group with usable data in the latest capture.',
+    read: 'Should be steady day to day. A jump means names joined or dropped out, which shifts the group’s median.',
+  },
+  cohortIqr: {
+    term: 'IV spread (IQR)',
+    what: 'How far apart the members’ implied volatilities are: the gap between the 25th and 75th percentile, in vol points.',
+    read: 'A wider spread means the group is less uniform, so comparing any one stock with its median is less precise.',
+  },
+  dispersionProxy: {
+    term: 'Dispersion proxy',
+    what: 'The benchmark ETF’s implied volatility divided by the average of its members’.',
+    read: 'Low means the members are expected to move independently (stock-picking conditions); high means they are expected to move together (macro-driven).',
+    caveat: 'A proxy, not a true implied correlation.',
+  },
+  dispersionPct: {
+    term: '90-day percentile',
+    what: 'Where today’s dispersion proxy sits in the group’s last 90 sessions.',
+    read: 'Above 70 (red): members unusually tied together. Below 30 (green): unusually independent. Until 20 sessions are on record it shows how many have been collected.',
+  },
+
   // ── Flow ──
   putCallRatio: {
     term: 'Put/Call ratio',

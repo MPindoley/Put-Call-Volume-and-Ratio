@@ -9,6 +9,9 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardHeader } from '@/components/ui/card';
+import { CollapsibleSection, useSections } from '@/components/ui/collapsible';
+import { GlanceBlock, GlanceTile } from '@/components/ui/glance';
+import { MoreDetail } from '@/components/ui/more-detail';
 import { PageHeader } from '@/components/shell/PageHeader';
 import { Skeleton } from '@/components/ui/skeleton';
 import type { Calibration, SignalSummary } from '@/lib/learning';
@@ -16,10 +19,19 @@ import type { CoverageReport, Stage, StageStatus, StockCoverage } from '@/lib/le
 import type { LearningReport } from '@/lib/learning-jobs';
 import type { Condition, ConditionFactors, Coverage, HorizonKey } from '@/lib/projection-history';
 import { Term } from '@/components/ui/term';
+import type { GlossaryKey } from '@/lib/glossary';
 import { SpikeTableView } from '@/components/ticker/IntradayCards';
 import type { IntradayLearningResponse } from '@/app/api/learning/intraday/route';
 import type { SignalTimingView } from '@/app/api/learning/route';
 import type { ComboView } from '@/lib/signal-combos';
+import {
+  SIGNAL_NAMES,
+  learningHeadlines,
+  learningSentence,
+  learningTiles,
+  type LearningSectionId,
+  type LearningSummaryInput,
+} from '@/lib/learning-summary';
 import { timingSentence, timingShort, type SignalTiming } from '@/lib/signal-timing';
 import { HORIZON_LABEL, HORIZONS } from '@/lib/spike-outcomes';
 import { cn } from '@/lib/utils';
@@ -40,13 +52,6 @@ interface SummaryResponse {
   combos: { minGraded: number; pairs: ComboView[] } | null;
 }
 
-const SIGNAL_NAMES: Record<string, string> = {
-  skew_z: 'Skew z-score',
-  divergence: 'Price / skew divergence',
-  pc_extreme: 'OI put/call extreme',
-  pc_own: 'OI put/call vs own range',
-  spike_alert: 'Volume spike',
-};
 const REGIME_NAMES: Record<string, string> = {
   'pos|pos': 'calm vol · uptrend',
   'pos|neg': 'calm vol · downtrend',
@@ -64,6 +69,34 @@ async function getJson<T>(url: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+// One query per data set, shared by the page (for the headlines) and the section that shows it in full.
+const useCoverageReport = () =>
+  useQuery({ queryKey: ['learning-coverage'], queryFn: () => getJson<CoverageReport>('/api/learning/coverage'), refetchInterval: 600_000 });
+const useIntradayLearning = () =>
+  useQuery({
+    queryKey: ['learning-intraday'],
+    queryFn: () => getJson<IntradayLearningResponse>('/api/learning/intraday'),
+    refetchInterval: 300_000,
+  });
+const useProjectionRecord = () =>
+  useQuery({
+    queryKey: ['projection-coverage'],
+    queryFn: () => getJson<ProjectionCoverageResponse>('/api/projection'),
+    refetchInterval: 300_000,
+  });
+
+const SECTIONS: { id: LearningSectionId; title: string; help: GlossaryKey }[] = [
+  { id: 'signals', title: 'Signal by signal', help: 'secLearnSignals' },
+  { id: 'together', title: 'Signals together', help: 'secLearnTogether' },
+  { id: 'self-grade', title: 'Is it getting better?', help: 'secLearnSelfGrade' },
+  { id: 'time-of-day', title: 'Time of day', help: 'secLearnTimeOfDay' },
+  { id: 'projection', title: 'Projection track record', help: 'secLearnProjection' },
+  { id: 'coverage', title: 'Data coverage by stock', help: 'secLearnCoverage' },
+  { id: 'health', title: 'Data health', help: 'secLearnHealth' },
+];
+const SECTION_IDS = SECTIONS.map((s) => s.id);
+const titleOf = (id: LearningSectionId): string => SECTIONS.find((s) => s.id === id)!.title;
+
 export function LearningView(): JSX.Element {
   const summary = useQuery({ queryKey: ['learning'], queryFn: () => getJson<SummaryResponse>('/api/learning'), refetchInterval: 300_000 });
   const report = useQuery({
@@ -71,22 +104,70 @@ export function LearningView(): JSX.Element {
     queryFn: () => getJson<LearningReport>('/api/learning/report'),
     refetchInterval: 300_000,
   });
+  const coverage = useCoverageReport();
+  const intraday = useIntradayLearning();
+  const projection = useProjectionRecord();
+  const sections = useSections('learning.sections');
+
+  const input: LearningSummaryInput = {
+    report: report.data ?? null,
+    signals: summary.data?.learning?.signals ?? null,
+    combos: summary.data?.learning ? summary.data.combos : null,
+    coverage: coverage.data ?? null,
+    intraday: intraday.data ?? null,
+    projection: projection.data?.all ?? null,
+  };
+  const headlines = learningHeadlines(input);
+  const est = report.data?.status.established;
+  const content: Record<LearningSectionId, JSX.Element> = {
+    signals: (
+      <>
+        <LearnedCard data={summary.data} loading={summary.isLoading} />
+        {est && (
+          <p className="border-t border-surface-border px-4 py-2 text-[10px] leading-relaxed text-slate-500">
+            <Term k="learnEstablished">Established</Term> by level — signal {est.signal.established}/{est.signal.total} · regime{' '}
+            {est.regime.established}/{est.regime.total} · sector {est.sector.established}/{est.sector.total} · stock {est.ticker.established}/
+            {est.ticker.total}. Deeper levels need more history before they count; a stock-level estimate needs roughly 80 graded signals
+            to stand on its own.
+          </p>
+        )}
+      </>
+    ),
+    together: <CombosCard combos={summary.data?.learning ? summary.data.combos : null} />,
+    'self-grade': report.data ? <SelfGradeCard c={report.data.selfGrade} /> : <Waiting loading={report.isLoading} />,
+    'time-of-day': <TimeOfDayCard />,
+    projection: <ProjectionRecordCard />,
+    coverage: <CoverageCard />,
+    health: report.data ? <HealthCard r={report.data} /> : <Waiting loading={report.isLoading} />,
+  };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-3 p-4 lg:p-6">
-      <PageHeader
-        title="What the app has learned"
-        description={
-          <>
-            Every signal is graded 10 trading sessions after it fires: did the stock beat the market in the direction the signal
-            pointed, more often than it does with no signal at all? Each night the app updates what that record says, leaning
-            hard on small samples toward &ldquo;no edge&rdquo; until the evidence earns more. Then it grades itself.
-          </>
-        }
-      />
+    <div className="mx-auto max-w-7xl space-y-2 p-4 lg:p-6">
+      <div className="pb-1">
+        <PageHeader
+          title="What the app has learned"
+          description={
+            <>
+              Every signal is graded 10 trading sessions after it fires: did the stock beat the market in the direction the signal
+              pointed, more often than it does with no signal at all? Each night the app updates what that record says, leaning
+              hard on small samples toward &ldquo;no edge&rdquo; until the evidence earns more. Then it grades itself.
+            </>
+          }
+          right={
+            <div className="flex gap-3 text-xs text-slate-500">
+              <button type="button" className="hover:text-slate-300" onClick={() => sections.setAll(SECTION_IDS, true)}>
+                Open all
+              </button>
+              <button type="button" className="hover:text-slate-300" onClick={() => sections.setAll(SECTION_IDS, false)}>
+                Close all
+              </button>
+            </div>
+          }
+        />
+      </div>
 
       {report.isLoading ? (
-        <Skeleton className="h-28 w-full" />
+        <Skeleton className="h-36 w-full" />
       ) : report.isError || !report.data ? (
         <Card>
           <p className="p-4 text-xs text-slate-400">
@@ -95,19 +176,53 @@ export function LearningView(): JSX.Element {
           </p>
         </Card>
       ) : (
-        <StatusCard r={report.data} />
+        <GlanceBlock label="Learning at a glance" sentence={learningSentence(input)}>
+          {learningTiles(input).map((t) => {
+            const section = t.section;
+            return (
+              <GlanceTile
+                key={t.id}
+                label={t.label}
+                term={t.term}
+                verdict={t.verdict}
+                detail={t.detail}
+                tone={t.tone}
+                opens={section ? titleOf(section) : null}
+                onOpen={section ? () => sections.reveal(section) : undefined}
+              />
+            );
+          })}
+        </GlanceBlock>
       )}
 
-      <CoverageCard />
-
-      <LearnedCard data={summary.data} loading={summary.isLoading} />
-      {summary.data?.learning && <CombosCard combos={summary.data.combos} />}
-
-      {report.data && <SelfGradeCard c={report.data.selfGrade} />}
-      <TimeOfDayCard />
-      <ProjectionRecordCard />
-      {report.data && <HealthCard r={report.data} />}
+      {SECTIONS.map((d) => (
+        <CollapsibleSection
+          key={d.id}
+          id={d.id}
+          title={d.title}
+          summary={headlines[d.id]}
+          help={d.help}
+          open={sections.isOpen(d.id)}
+          onToggle={() => sections.toggle(d.id)}
+        >
+          {content[d.id]}
+        </CollapsibleSection>
+      ))}
+      <p className="pt-1 text-[10px] text-slate-500">
+        Underlined terms and the ? beside each section explain themselves — hover, tab to them, or tap for what it is, how it is worked out and how to read it.
+      </p>
     </div>
+  );
+}
+
+/** A section whose data is the nightly report: still loading, or not produced yet. */
+function Waiting({ loading }: { loading: boolean }): JSX.Element {
+  return loading ? (
+    <div className="p-4">
+      <Skeleton className="h-24 w-full" />
+    </div>
+  ) : (
+    <p className="p-4 text-xs text-slate-400">Appears with the first nightly learning report.</p>
   );
 }
 
@@ -137,11 +252,7 @@ const STATUS_CLASS: Record<StageStatus, string> = {
 
 /** Is every stock's data reaching every stage of the learning? Stage counts, stocks needing attention, and a lookup. */
 function CoverageCard(): JSX.Element {
-  const q = useQuery({
-    queryKey: ['learning-coverage'],
-    queryFn: () => getJson<CoverageReport>('/api/learning/coverage'),
-    refetchInterval: 600_000,
-  });
+  const q = useCoverageReport();
   const [lookup, setLookup] = useState('');
   const [symbol, setSymbol] = useState<string | null>(null);
   const one = useQuery({
@@ -151,7 +262,7 @@ function CoverageCard(): JSX.Element {
     retry: false,
   });
 
-  if (q.isLoading) return <Skeleton className="h-40 w-full" />;
+  if (q.isLoading) return <SectionSkeleton />;
   if (q.isError || !q.data) {
     return (
       <Card>
@@ -305,14 +416,10 @@ function StockCoverageLine({ c, thresholds: t }: { c: StockCoverage; thresholds:
  * Time-of-day learning: how many names have a daily clock of their own, how the
  * kinds of day differ across all names, and what has followed spike alerts.
  */
-function TimeOfDayCard(): JSX.Element | null {
-  const q = useQuery({
-    queryKey: ['learning-intraday'],
-    queryFn: () => getJson<IntradayLearningResponse>('/api/learning/intraday'),
-    refetchInterval: 300_000,
-  });
-  if (q.isLoading) return <Skeleton className="h-40 w-full" />;
-  if (q.isError || !q.data) return null;
+function TimeOfDayCard(): JSX.Element {
+  const q = useIntradayLearning();
+  if (q.isLoading) return <SectionSkeleton />;
+  if (q.isError || !q.data) return <p className="p-4 text-xs text-slate-400">Time-of-day learning could not be loaded.</p>;
   const { clock, spikes } = q.data;
   const firstHour = (k: 'regular' | 'expiry' | 'earnings'): number => clock.all[0]![k] + clock.all[1]![k];
   const lastHour = (k: 'regular' | 'expiry' | 'earnings'): number => clock.all[11]![k] + clock.all[12]![k];
@@ -330,15 +437,17 @@ function TimeOfDayCard(): JSX.Element | null {
           by time of day.
         </p>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Tile label="Stocks with own sessions" value={`${clock.withOwnData} / ${clock.names}`} sub="the rest use their sector's clock" />
+          <Tile label="Stocks with own sessions" term="dailyClock" value={`${clock.withOwnData} / ${clock.names}`} sub="the rest use their sector's clock" />
           <Tile
             label="Mostly their own clock"
+            term="dailyClock"
             value={String(clock.mostlyOwn)}
             sub={`${clock.params.stockPrior}+ sessions on record; the most any stock has is ${clock.maxSessions}`}
           />
-          <Tile label="Spike alerts graded" value={String(spikes.episodes)} sub={`${spikes.pending} waiting for a session to settle`} />
+          <Tile label="Spike alerts graded" term="followThrough" value={String(spikes.episodes)} sub={`${spikes.pending} waiting for a session to settle`} />
           <Tile
             label="First hour, all stocks"
+            term="normalDayShare"
             value={pct(firstHour('regular'))}
             sub={clock.learned ? `expiry days ${pct(firstHour('expiry'))} · earnings days ${pct(firstHour('earnings'))}` : 'the starting curve, until sessions are folded in'}
           />
@@ -363,7 +472,7 @@ function TimeOfDayCard(): JSX.Element | null {
             </p>
           )}
         </div>
-        <div>
+        <MoreDetail id="spike-breadth" label="lone spikes against sector-wide ones">
           <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">
             One stock, or its sector at once — <Term k="spikeBreadth">lone and sector-wide spikes</Term>, graded apart
           </p>
@@ -413,67 +522,37 @@ function TimeOfDayCard(): JSX.Element | null {
             Counted from when this started being recorded; each alert in the feed says which kind it is. A cell fills in at {spikes.minRoot}{' '}
             graded spikes.
           </p>
-        </div>
+        </MoreDetail>
       </div>
     </Card>
   );
 }
 
-function Tile({ label, value, sub }: { label: string; value: string; sub?: string }): JSX.Element {
+function Tile({ label, value, sub, term }: { label: string; value: string; sub?: string; term?: GlossaryKey }): JSX.Element {
   return (
     <div>
-      <p className="text-[10px] uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="text-[10px] uppercase tracking-wider text-slate-500">{term ? <Term k={term}>{label}</Term> : label}</p>
       <p className="text-lg font-semibold tnum text-slate-100">{value}</p>
       {sub && <p className="text-[10px] text-slate-500">{sub}</p>}
     </div>
   );
 }
 
-function StatusCard({ r }: { r: LearningReport }): JSX.Element {
-  const s = r.status;
-  const est = s.established;
-  const estN = est ? est.signal.established + est.regime.established + est.sector.established + est.ticker.established : 0;
-  const estT = est ? est.signal.total + est.regime.total + est.sector.total + est.ticker.total : 0;
+function SectionSkeleton(): JSX.Element {
   return (
-    <Card>
-      <CardHeader title="How much it knows" />
-      <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-5">
-        <Tile
-          label="Sessions captured"
-          value={String(s.captured.count)}
-          sub={
-            (s.captured.first ? `${s.captured.first} → ${s.captured.last}` : 'first at the next close') +
-            ` · ${s.sessions.count} days of price history`
-          }
-        />
-        <Tile label="Signals graded" value={s.signals.graded.toLocaleString()} sub={`of ${s.signals.logged.toLocaleString()} logged`} />
-        <Tile
-          label="Awaiting grades"
-          value={s.signals.pending.toLocaleString()}
-          sub={s.signals.nextMaturity ? `next due ${s.signals.nextMaturity}` : 'none pending'}
-        />
-        <Tile label="Nightly snapshots" value={String(s.books.total)} sub={`${s.books.live} live · ${s.books.reconstructed} rebuilt`} />
-        <Tile label="Established estimates" value={`${estN} / ${estT}`} sub="earned ≥ half their own weight" />
-      </div>
-      {est && (
-        <p className="border-t border-surface-border px-4 py-2 text-[10px] leading-relaxed text-slate-500">
-          Established by level — signal {est.signal.established}/{est.signal.total} · regime {est.regime.established}/
-          {est.regime.total} · sector {est.sector.established}/{est.sector.total} · stock {est.ticker.established}/{est.ticker.total}.
-          Deeper levels need more history before they count; a stock-level estimate needs roughly 80 graded signals to stand on
-          its own.
-        </p>
-      )}
-    </Card>
+    <div className="p-4">
+      <Skeleton className="h-32 w-full" />
+    </div>
   );
 }
 
 function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loading: boolean }): JSX.Element {
   const [open, setOpen] = useState<string | null>(null);
-  if (loading) return <Skeleton className="h-40 w-full" />;
+  if (loading) return <SectionSkeleton />;
   const l = data?.learning;
   return (
     <Card>
-      <CardHeader title={l ? `Signal by signal (as of ${l.asOf})` : 'Signal by signal'} />
+      <CardHeader title="Signal by signal" right={l ? <span className="text-[10px] tnum text-slate-500">as of {l.asOf}</span> : undefined} />
       {!l || l.signals.length === 0 ? (
         <p className="p-4 text-xs text-slate-400">
           Nothing graded yet under the current signal definitions. A signal is graded 10 sessions after it fires.
@@ -485,14 +564,14 @@ function LearnedCard({ data, loading }: { data: SummaryResponse | undefined; loa
               <tr>
                 <th className="py-1 font-normal">Signal</th>
                 <th className="py-1 text-right font-normal">Graded</th>
-                <th className="py-1 text-right font-normal" title="Hit rate above base rate, straight from the data (unshrunk)">
-                  Raw record
+                <th className="py-1 text-right font-normal">
+                  <Term k="rawRecord">Raw record</Term>
                 </th>
-                <th className="py-1 text-right font-normal" title="Share of the estimate this signal's own evidence earned">
-                  Confidence
+                <th className="py-1 text-right font-normal">
+                  <Term k="evidenceWeight">Confidence</Term>
                 </th>
-                <th className="py-1 text-right font-normal" title="Learned edge: points above base, ± approximate standard error">
-                  Learned edge
+                <th className="py-1 text-right font-normal">
+                  <Term k="learnedEdge">Learned edge</Term>
                 </th>
                 <th className="py-1 pl-4 text-right font-normal">
                   <Term k="signalTiming">Plays out over</Term>
@@ -711,6 +790,9 @@ function SelfGradeCard({ c }: { c: Calibration }): JSX.Element {
                 : 'at or below zero: so far its leans have not beaten simply knowing each stock’s usual behaviour. That is the system telling the truth, not a fault in it.'}
           </p>
 
+          {(c.bins.length > 0 || c.byMonth.length > 0) && (
+          <MoreDetail id="self-grade" label="the breakdown by strength of call and month by month">
+          <div className="space-y-4">
           {c.bins.length > 0 && (
             <div>
               <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">Did strong calls deliver more than weak ones?</p>
@@ -757,6 +839,9 @@ function SelfGradeCard({ c }: { c: Calibration }): JSX.Element {
                 ))}
               </div>
             </div>
+          )}
+          </div>
+          </MoreDetail>
           )}
         </div>
       )}
@@ -871,11 +956,7 @@ function ConditionsTable({ c }: { c: Record<HorizonKey, ConditionFactors> }): JS
  * low/high split shows which way the misses fall.
  */
 function ProjectionRecordCard(): JSX.Element {
-  const q = useQuery({
-    queryKey: ['projection-coverage'],
-    queryFn: () => getJson<ProjectionCoverageResponse>('/api/projection'),
-    refetchInterval: 300_000,
-  });
+  const q = useProjectionRecord();
   const pctOf = (v: number | null | undefined): string => (v === null || v === undefined ? '—' : `${Math.round(v * 100)}%`);
   const rows: { label: string; c: Record<HorizonKey, Coverage> }[] = q.data
     ? [

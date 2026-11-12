@@ -19,7 +19,18 @@ interface Placement {
   bottom?: number;
 }
 
-export function Term({ k, children, className }: { k: GlossaryKey; children?: ReactNode; className?: string }): JSX.Element {
+export function Term({
+  k,
+  children,
+  className,
+  label,
+}: {
+  k: GlossaryKey;
+  children?: ReactNode;
+  className?: string;
+  /** Spoken name, for when the visible content is only a symbol such as "?". */
+  label?: string;
+}): JSX.Element {
   const entry: GlossaryEntry = GLOSSARY[k];
   const ref = useRef<HTMLSpanElement>(null);
   const id = useId();
@@ -67,6 +78,7 @@ export function Term({ k, children, className }: { k: GlossaryKey; children?: Re
         ref={ref}
         role="button"
         tabIndex={0}
+        aria-label={label}
         aria-describedby={open ? id : undefined}
         aria-expanded={open}
         onMouseEnter={show}

@@ -65,6 +65,8 @@ interface FlowState {
   sortKey: SortKey;
   sortDir: 'asc' | 'desc';
   pinned: string[];
+  /** The stock shown in the scanner's quick look; not remembered between visits. */
+  selected: string | null;
 
   applyFlowUpdate: (rows: TickerFlow[]) => void;
   /** Merge live prices into existing rows (only the price fields change). */
@@ -96,6 +98,7 @@ interface FlowState {
   setFlowFilter: (f: FlowFilter) => void;
   setSort: (key: SortKey) => void;
   togglePin: (symbol: string) => void;
+  setSelected: (symbol: string | null) => void;
 }
 
 const SIGNIFICANT_NET_FLOW = 500; // contracts over the rolling window
@@ -121,6 +124,7 @@ export const useFlowStore = create<FlowState>()(
       sortKey: 'spikeScore',
       sortDir: 'desc',
       pinned: [],
+      selected: null,
 
       applyFlowUpdate: (incoming) => {
         const { rows, flashes } = get();
@@ -199,6 +203,7 @@ export const useFlowStore = create<FlowState>()(
             ? state.pinned.filter((s) => s !== symbol)
             : [...state.pinned, symbol],
         })),
+      setSelected: (selected) => set({ selected }),
     }),
     {
       name: 'flow-ui-state',
